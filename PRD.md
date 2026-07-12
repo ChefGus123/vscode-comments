@@ -311,10 +311,10 @@ Resolved during development (kept here as a record of what was checked, not just
 - **Sequential (not parallelized) workspace-wide reads** — fixed in `initialize()`, `listUnresolved()`, `listArchivedFilePaths()`.
 - **Redundant directory-existence checks on every write** — fixed, directories are known to exist after `initialize()`.
 - **Abandoned draft comment threads** (right-click → Add Comment → never submit → close tab) — fixed for the tab-close case; click-away-without-closing-the-tab is unverified (would require observing VS Code's own comment-widget behavior live).
+- **No test suite.** Fixed — Jest + Babel unit suite added with 100% statement/branch coverage across every file in `src/`. See "Testing" in §11 for the runner/mocking decisions.
 
 Still open / accepted:
 
-- **No test suite.** The anchoring logic and path-canonicalization rules are exactly the kind of pure logic that would benefit from unit coverage. Deliberately not bootstrapped without being asked — runner choice and mocking strategy for `vscode` are real decisions, not a bug fix.
 - **Path casing/slash-direction differences across OS, symlink duplication.** Low priority — storage is local-machine-only by design already.
 - **Cross-machine/cross-clone comment sharing.** Not addressed; storage is local to the machine by design (git-safety constraint).
 
@@ -340,6 +340,7 @@ Still open / accepted:
 | MCP tool design | Bulk-first, grouped-by-file, lean/omit-by-default responses |
 | UI creation | Native gutter "+" + an explicit right-click command (VS Code doesn't auto-add one) |
 | UI visibility | Custom sidebar TreeView (toggle unresolved/all) + Explorer file decorations |
+| Testing | Jest + Babel (`@babel/preset-typescript`, transpile-only — `tsc` already owns type-checking); `vscode` mocked by hand in `test/__mocks__/vscode.ts` (in-memory `workspace.fs`, real `Uri`/`Range`/`EventEmitter` semantics) since `@types/vscode` has no runtime module to import; `mcp/server.ts` tested against a real HTTP server + real `@modelcontextprotocol/sdk` client, not mocked, since the wire protocol is the actual surface being verified |
 
 ---
 
@@ -349,7 +350,6 @@ Still open / accepted:
 - Richer agent identity (which specific agent/session authored a comment) — explicitly out of scope.
 - Cross-machine or cross-clone comment sharing — not addressed, by design.
 - Manual "reconnect" UX for `file-not-found` comments — not designed in detail; the flag is surfaced, reconnection is currently a manual discard-and-recreate.
-- Test suite — see [§10](#10-known-risks--prioritized).
 
 ---
 
@@ -367,3 +367,4 @@ Chronological, most recent last. Add an entry whenever a decision in this doc ch
 - **Bounded the write-queue map** — entries now self-remove once settled, instead of accumulating for the life of the extension host.
 - **Resolved comments stay visible in-editor for the session** despite moving to the archive on disk — reconciles the storage model with the desired UX.
 - **Rebranded "Agent Comments" → "Agentic Comments"** across display strings; internal command/controller ids (`agentComments.*`) kept stable.
+- **Added a Jest unit test suite** at 100% statement/branch coverage across `src/`. `ts-jest` was tried first and rejected — it crashes against the project's TypeScript ^7 beta (`ConfigSet._resolveTsConfig` throws); switched to `babel-jest` + `@babel/preset-typescript`, which only transpiles (no type-checking, already covered by `npm run typecheck`) and has no TS-version coupling. `vscode` has no real module to require outside the extension host, so `test/__mocks__/vscode.ts` hand-implements the slice of the API `src/` actually uses (in-memory `workspace.fs`, functioning `Uri`/`Range`/`EventEmitter`/`TreeItem`, etc.) rather than pulling in a third-party mock package. `mcp/server.ts` is tested by starting the real HTTP server and driving it with a real `@modelcontextprotocol/sdk` client — the wire protocol and auth-header check are the actual thing worth verifying there. A handful of genuinely defensive branches unreachable through any public code path (e.g. a cache-eviction guard, a zod-defaulted argument) are exercised by direct white-box calls into private members rather than left uncovered.
