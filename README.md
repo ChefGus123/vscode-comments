@@ -37,10 +37,12 @@ Four tools are exposed:
 
 | Tool | Purpose |
 |---|---|
-| `list_unresolved_comments` | List unresolved comments for one file, or the whole workspace if `file` is omitted. |
-| `get_comments` | Get all comments for a specific file, optionally including resolved ones (`includeResolved: true`). |
-| `add_comment` | Leave a new comment anchored to a line or range in a file. Always attributed to the agent. |
-| `resolve_comment` | Mark a comment resolved. Always attributed to the agent. |
+| `list_unresolved_comments` | List unresolved comments, grouped by file. Omit `file` to list across the whole workspace. |
+| `get_comments` | Get all comments for one or more files in a single call, grouped by file, optionally including resolved ones (`includeResolved: true`). |
+| `add_comments` | Leave one or more comments in a single call, grouped by file (`{ files: { "path": [{ line, text }] } }`). Always attributed to the agent. |
+| `resolve_comments` | Resolve one or more comments in a single call, grouped by file (`{ files: { "path": ["id1", "id2"] } }`). Always attributed to the agent. |
+
+All three multi-comment tools are bulk by design — batching everything into one call instead of one call per comment avoids paying a full round trip per item. Responses are grouped by file rather than repeating the file path on every comment, and each item in a batch succeeds or fails independently so one bad entry doesn't sink the rest. `resolve_comments` goes a step further: since the caller already knows which ids it asked to resolve, a fully-successful call just returns a count (`{"resolved": 5}`) rather than echoing every id back — only failures are itemized.
 
 Responses are kept deliberately lean to save tokens — fields that are almost always the same value (e.g. a normal `fileStatus`, an exact anchor, an unresolved status) are simply omitted rather than spelled out on every comment.
 

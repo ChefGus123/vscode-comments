@@ -33,7 +33,7 @@ export function createAnchor(document: vscode.TextDocument, startLine0: number, 
 
 /**
  * Builds a fresh anchor from raw file content rather than a live TextDocument — used by the MCP
- * `add_comment` tool, which routinely targets files that aren't open in any editor tab (§3.3).
+ * `add_comments` tool, which routinely targets files that aren't open in any editor tab (§3.3).
  */
 export function createAnchorFromContent(content: string, startLine0: number, endLine0: number): Anchor {
   const lines = normalizeLineEndings(content).split('\n');

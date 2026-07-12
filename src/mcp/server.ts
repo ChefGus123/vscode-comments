@@ -13,47 +13,43 @@ import { ToolCommentView } from '../types';
 export const AUTH_HEADER = 'x-agent-comments-token';
 
 /**
- * Lean wire format for tool responses — every field costs tokens on every call, so fields that are
- * almost always the same value (fileStatus "ok", anchor "exact", status "unresolved") are omitted
+ * Lean wire format for tool responses — every field costs tokens on every call. Responses are
+ * grouped by file (`{ files: { "<path>": {...} } }`) instead of repeating the file path on every
+ * comment, and file-level facts (fileStatus) live once on the group rather than once per comment.
+ * Fields that are almost always the same value (an exact anchor, an unresolved status) are omitted
  * rather than spelled out, and author/resolvedBy are flattened from {type: "x"} to plain "x".
  */
-interface McpCommentView {
+interface McpCommentEntry {
   id: string;
-  file: string;
   line: number;
   endLine?: number;
   text: string;
   author: 'user' | 'agent';
-  fileStatus?: 'file-not-found';
   locationUncertain?: true;
   status?: 'resolved';
   resolvedBy?: 'user' | 'agent';
 }
 
-function toMcpView(c: ToolCommentView): McpCommentView {
-  const view: McpCommentView = {
+function toMcpCommentEntry(c: ToolCommentView): McpCommentEntry {
+  const entry: McpCommentEntry = {
     id: c.id,
-    file: c.file,
     line: c.line,
     text: c.text,
     author: c.author.type,
   };
   if (c.endLine !== undefined) {
-    view.endLine = c.endLine;
-  }
-  if (c.fileStatus !== 'ok') {
-    view.fileStatus = c.fileStatus;
+    entry.endLine = c.endLine;
   }
   if (c.anchorStatus !== 'exact') {
-    view.locationUncertain = true;
+    entry.locationUncertain = true;
   }
   if (c.status === 'resolved') {
-    view.status = 'resolved';
+    entry.status = 'resolved';
     if (c.resolvedBy) {
-      view.resolvedBy = c.resolvedBy.type;
+      entry.resolvedBy = c.resolvedBy.type;
     }
   }
-  return view;
+  return entry;
 }
 
 /** Prefers a live open/dirty buffer over disk content, so a comment anchors against what's actually
@@ -142,9 +138,8 @@ export class AgentCommentsMcpServer implements vscode.Disposable {
       {
         title: 'List unresolved comments',
         description:
-          'Lists unresolved review comments left by the developer or other agents, anchored to exact code locations. Omit "file" to list across the whole workspace. ' +
-          'Fields are omitted when not notable: "fileStatus" only appears as "file-not-found" (the commented file is missing — comment kept, not auto-relocated); ' +
-          '"locationUncertain: true" means the code around the comment changed and the line number may be off — check nearby lines or the comment text itself before trusting it.',
+          'Lists unresolved review comments, grouped by file. Omit "file" to list across the whole workspace. ' +
+          '"locationUncertain: true" means the code nearby changed and the line number may be off.',
         inputSchema: {
           file: z.string().optional().describe('Workspace-relative file path. Omit for the whole workspace.'),
         },
@@ -159,85 +154,137 @@ export class AgentCommentsMcpServer implements vscode.Disposable {
           canonicalFile = resolved.canonicalFile;
         }
         const comments = await this.store.listUnresolved(canonicalFile);
-        return asResult({ comments: comments.map(toMcpView) });
+        const files: Record<string, { fileStatus?: 'file-not-found'; comments: McpCommentEntry[] }> = {};
+        for (const c of comments) {
+          const group = (files[c.file] ??= { comments: [] });
+          if (c.fileStatus !== 'ok') {
+            group.fileStatus = c.fileStatus;
+          }
+          group.comments.push(toMcpCommentEntry(c));
+        }
+        return asResult({ files });
       }
     );
 
     server.registerTool(
       'get_comments',
       {
-        title: 'Get comments for a file',
+        title: 'Get comments for files (bulk)',
         description:
-          'Gets all comments for a specific file, optionally including resolved ones (read from the archive). ' +
-          'A "status": "resolved" field appears only on resolved entries (everything else is unresolved); "resolvedBy" ("user" or "agent") comes with it.',
+          'Gets all comments for one or more files, grouped by file, optionally including resolved ones. ' +
+          'A "status": "resolved" entry means resolved; "resolvedBy" comes with it.',
         inputSchema: {
-          file: z.string().describe('Workspace-relative file path.'),
+          files: z.array(z.string()).min(1).describe('Workspace-relative file paths.'),
           includeResolved: z.boolean().optional().default(false),
         },
       },
-      async ({ file, includeResolved }) => {
-        const resolved = resolveCanonicalFile(file);
-        if ('error' in resolved) {
-          return asError(resolved.error);
-        }
-        const comments = await this.store.getComments(resolved.canonicalFile, includeResolved ?? false);
-        return asResult({ comments: comments.map(toMcpView) });
+      async ({ files, includeResolved }) => {
+        const perFile = await Promise.all(
+          files.map(async (file) => {
+            const resolved = resolveCanonicalFile(file);
+            if ('error' in resolved) {
+              return [file, { error: resolved.error }] as const;
+            }
+            const comments = await this.store.getComments(resolved.canonicalFile, includeResolved ?? false);
+            const fileStatus =
+              comments.length > 0 ? comments[0].fileStatus : (await this.store.loadFile(resolved.canonicalFile)).fileStatus;
+            const group: { fileStatus?: 'file-not-found'; comments: McpCommentEntry[] } = {
+              comments: comments.map(toMcpCommentEntry),
+            };
+            if (fileStatus !== 'ok') {
+              group.fileStatus = fileStatus;
+            }
+            return [file, group] as const;
+          })
+        );
+        return asResult({ files: Object.fromEntries(perFile) });
+      }
+    );
+
+    const addCommentEntrySchema = z.object({
+      line: z.number().int().min(1).describe('1-indexed start line.'),
+      endLine: z.number().int().min(1).optional().describe('1-indexed end line, for range comments.'),
+      text: z.string().min(1),
+    });
+
+    server.registerTool(
+      'add_comments',
+      {
+        title: 'Add comments (bulk)',
+        description: 'Leaves one or more review comments, grouped by file, in one call. Always stamped as author type "agent".',
+        inputSchema: {
+          files: z.record(z.array(addCommentEntrySchema)).describe('Map of workspace-relative file path to the comments to add there.'),
+        },
+      },
+      async ({ files }) => {
+        const perFile = await Promise.all(
+          Object.entries(files).map(async ([file, items]) => {
+            const uri = resolveWorkspaceRelativePath(file);
+            if (!uri) {
+              return [file, { error: `No workspace folder open to resolve "${file}".` }] as const;
+            }
+            let content: string;
+            try {
+              content = await readCurrentText(uri);
+            } catch {
+              return [file, { error: `File not found: ${file}` }] as const;
+            }
+            const canonicalFile = toWorkspaceRelativePath(uri);
+            const created = await Promise.all(
+              items.map(async (item) => {
+                const startLine0 = item.line - 1;
+                const endLine0 = (item.endLine ?? item.line) - 1;
+                const anchor = createAnchorFromContent(content, startLine0, Math.max(startLine0, endLine0));
+                const comment = await this.store.addComment(canonicalFile, anchor, item.text, { type: 'agent' });
+                return item.endLine !== undefined
+                  ? { line: item.line, endLine: item.endLine, id: comment.id }
+                  : { line: item.line, id: comment.id };
+              })
+            );
+            return [file, { created }] as const;
+          })
+        );
+        return asResult({ files: Object.fromEntries(perFile) });
       }
     );
 
     server.registerTool(
-      'add_comment',
+      'resolve_comments',
       {
-        title: 'Add a comment',
+        title: 'Resolve comments (bulk)',
         description:
-          'Leaves a new review comment anchored to a line or range in a file, visible to the developer and other agents. Always stamped as author type "agent".',
+          'Resolves one or more comments, grouped by file, in one call. Always stamped as resolved by author type "agent".',
         inputSchema: {
-          file: z.string().describe('Workspace-relative file path.'),
-          line: z.number().int().min(1).describe('1-indexed start line.'),
-          endLine: z.number().int().min(1).optional().describe('1-indexed end line, for range comments.'),
-          text: z.string().min(1),
+          files: z.record(z.array(z.string())).describe('Map of workspace-relative file path to the comment ids to resolve there.'),
         },
       },
-      async ({ file, line, endLine, text }) => {
-        const uri = resolveWorkspaceRelativePath(file);
-        if (!uri) {
-          return asError(`No workspace folder open to resolve "${file}".`);
-        }
-        const canonicalFile = toWorkspaceRelativePath(uri);
-        let content: string;
-        try {
-          content = await readCurrentText(uri);
-        } catch {
-          return asError(`File not found: ${file}`);
-        }
-        const startLine0 = line - 1;
-        const endLine0 = (endLine ?? line) - 1;
-        const anchor = createAnchorFromContent(content, startLine0, Math.max(startLine0, endLine0));
-        const comment = await this.store.addComment(canonicalFile, anchor, text, { type: 'agent' });
-        return asResult({ id: comment.id, status: 'created' as const });
-      }
-    );
+      async ({ files }) => {
+        let resolvedCount = 0;
+        const failed: Record<string, { id: string; error: string }[]> = {};
 
-    server.registerTool(
-      'resolve_comment',
-      {
-        title: 'Resolve a comment',
-        description: 'Marks a comment as resolved. Always stamped as resolved by author type "agent".',
-        inputSchema: {
-          file: z.string().describe('Workspace-relative file path.'),
-          id: z.string(),
-        },
-      },
-      async ({ file, id }) => {
-        const resolved = resolveCanonicalFile(file);
-        if ('error' in resolved) {
-          return asError(resolved.error);
+        await Promise.all(
+          Object.entries(files).map(async ([file, ids]) => {
+            const resolved = resolveCanonicalFile(file);
+            if ('error' in resolved) {
+              failed[file] = ids.map((id) => ({ id, error: resolved.error }));
+              return;
+            }
+            const results = await Promise.all(
+              ids.map(async (id) => ({ id, ok: !!(await this.store.resolveComment(resolved.canonicalFile, id, { type: 'agent' })) }))
+            );
+            const fails = results.filter((r) => !r.ok).map((r) => ({ id: r.id, error: `Comment not found: ${r.id}` }));
+            resolvedCount += results.length - fails.length;
+            if (fails.length > 0) {
+              failed[file] = fails;
+            }
+          })
+        );
+
+        const payload: Record<string, unknown> = { resolved: resolvedCount };
+        if (Object.keys(failed).length > 0) {
+          payload.failed = failed;
         }
-        const comment = await this.store.resolveComment(resolved.canonicalFile, id, { type: 'agent' });
-        if (!comment) {
-          return asError(`Comment not found: ${id}`);
-        }
-        return asResult({ id: comment.id, status: 'resolved' as const, resolvedBy: 'agent' as const });
+        return asResult(payload);
       }
     );
   }
