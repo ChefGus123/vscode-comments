@@ -92,7 +92,7 @@ export class AgentCommentsMcpServer implements vscode.Disposable {
   }
 
   async start(): Promise<number> {
-    const server = new McpServer({ name: 'agent-comments', version: '0.1.0' });
+    const server = new McpServer({ name: 'agentic-comments', version: '0.1.0' });
     this.registerTools(server);
 
     const transport = new StreamableHTTPServerTransport({

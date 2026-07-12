@@ -1,6 +1,6 @@
 {
-  "name": "agent-comments",
-  "displayName": "Agent Comments",
+  "name": "agentic-comments",
+  "displayName": "Agentic Comments",
   "description": "Leave GitHub-style inline review comments on live code and expose them to AI coding agents via MCP.",
   "version": "0.1.0",
   "publisher": "IlayAmir",
@@ -31,64 +31,64 @@
       {
         "command": "agentComments.addComment",
         "title": "Add Comment",
-        "category": "Agent Comments"
+        "category": "Agentic Comments"
       },
       {
         "command": "agentComments.resolveComment",
         "title": "Resolve",
-        "category": "Agent Comments",
+        "category": "Agentic Comments",
         "icon": "$(check)"
       },
       {
         "command": "agentComments.reopenComment",
         "title": "Reopen",
-        "category": "Agent Comments",
+        "category": "Agentic Comments",
         "icon": "$(discard)"
       },
       {
         "command": "agentComments.revealComment",
         "title": "Reveal Comment",
-        "category": "Agent Comments"
+        "category": "Agentic Comments"
       },
       {
         "command": "agentComments.clearStorage",
         "title": "Clear All Comment Data for This Workspace",
-        "category": "Agent Comments"
+        "category": "Agentic Comments"
       },
       {
         "command": "agentComments.refreshTree",
         "title": "Refresh",
-        "category": "Agent Comments",
+        "category": "Agentic Comments",
         "icon": "$(refresh)"
       },
       {
         "command": "agentComments.showResolved",
         "title": "Show Resolved Comments",
-        "category": "Agent Comments",
+        "category": "Agentic Comments",
         "icon": "$(eye)"
       },
       {
         "command": "agentComments.hideResolved",
         "title": "Hide Resolved Comments",
-        "category": "Agent Comments",
+        "category": "Agentic Comments",
         "icon": "$(eye-closed)"
       },
       {
         "command": "agentComments.resolveCommentInTree",
         "title": "Resolve",
-        "category": "Agent Comments",
+        "category": "Agentic Comments",
         "icon": "$(check)"
       },
       {
         "command": "agentComments.reopenCommentInTree",
         "title": "Reopen",
-        "category": "Agent Comments",
+        "category": "Agentic Comments",
         "icon": "$(discard)"
       },
       {
         "command": "agentComments.addCommentAtSelection",
         "title": "Add Comment",
-        "category": "Agent Comments"
+        "category": "Agentic Comments"
       }
     ],
     "menus": {
@@ -178,7 +178,7 @@
       "activitybar": [
         {
           "id": "agentComments",
-          "title": "Agent Comments",
+          "title": "Agentic Comments",
           "icon": "media/comment-icon.svg"
         }
       ]
@@ -194,7 +194,7 @@
     "mcpServerDefinitionProviders": [
       {
         "id": "agentComments.mcpProvider",
-        "label": "Agent Comments"
+        "label": "Agentic Comments"
       }
     ]
   },

@@ -32,7 +32,7 @@ export class AgentCommentsDecorationProvider implements vscode.FileDecorationPro
       return {
         badge: '!',
         color: new vscode.ThemeColor('problemsWarningIcon.foreground'),
-        tooltip: 'Agent Comments: file missing, comments preserved',
+        tooltip: 'Agentic Comments: file missing, comments preserved',
       };
     }
     return {

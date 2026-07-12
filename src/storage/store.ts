@@ -182,7 +182,7 @@ export class CommentStore {
 
       if (unresolvedCount > UNRESOLVED_WARNING_THRESHOLD) {
         vscode.window.showWarningMessage(
-          `Agent Comments: ${data.filePath} has ${unresolvedCount} unresolved comments. Consider resolving some.`
+          `Agentic Comments: ${data.filePath} has ${unresolvedCount} unresolved comments. Consider resolving some.`
         );
       }
     }

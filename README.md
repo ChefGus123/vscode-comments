@@ -1,4 +1,4 @@
-# Agent Comments
+# Agentic Comments
 
 Leave GitHub-style inline review comments directly on your live code — no git, no PRs, no diffs — and let AI coding agents (Copilot, Claude Code, or any MCP-compatible agent) read and act on them as structured, location-anchored context. Agents can leave comments back, too, turning the extension into a shared scratchpad between you and however many agent sessions you run.
 
@@ -24,7 +24,7 @@ Explaining "where" a problem is to an agent, over and over, in chat, doesn't sca
 - **Native inline comments** — the gutter "+" (single line) or a range selection + right-click → *Add Comment* (multi-line), using VS Code's own Comments UI (the same API GitHub/GitLab PR extensions use).
 - **Author-aware styling** — blue for comments you left, red for comments an agent left, with anchor confidence layered on top (dimmed = approximate location, warning glyph = orphaned).
 - **Resolve / Reopen** — binary status, right on the comment thread's title bar. A resolved comment shows who resolved it (you or an agent).
-- **Sidebar panel** — a dedicated "Agent Comments" view in the Activity Bar, grouped by file, with click-to-jump navigation and inline Resolve/Reopen actions. Toggle "Show Resolved" to see the full history, not just what's outstanding.
+- **Sidebar panel** — a dedicated "Agentic Comments" view in the Activity Bar, grouped by file, with click-to-jump navigation and inline Resolve/Reopen actions. Toggle "Show Resolved" to see the full history, not just what's outstanding.
 - **Explorer badges** — files with unresolved comments get a colored count badge, the same mechanism VS Code's Git integration uses for modified files.
 - **Anchors that degrade gracefully** — comments track a content hash plus surrounding context, not just a line number, so they survive edits. Anchor confidence is always shown, never hidden: `exact`, `approximate` (relocated via context), or `orphaned` (kept, flagged, never deleted).
 - **Nothing touches git.** Comment data lives entirely in VS Code's own per-workspace extension storage, outside your repo folder — no `.gitignore` entries, nothing to accidentally commit.
@@ -55,8 +55,8 @@ Whether an agent can use these tools at all is controlled entirely through **VS 
 | **Add Comment** | Gutter "+" on hover, or right-click a line/selection → *Add Comment* |
 | **Resolve** / **Reopen** | Comment thread title bar; also as an inline action in the sidebar |
 | **Reveal Comment** | Click a comment in the sidebar — jumps to it and expands the thread if collapsed |
-| **Show Resolved Comments** / **Hide Resolved Comments** | Toolbar icon in the Agent Comments sidebar panel |
-| **Refresh** | Toolbar icon in the Agent Comments sidebar panel |
+| **Show Resolved Comments** / **Hide Resolved Comments** | Toolbar icon in the Agentic Comments sidebar panel |
+| **Refresh** | Toolbar icon in the Agentic Comments sidebar panel |
 | **Clear All Comment Data for This Workspace** | Command Palette — deletes all stored comment data for the current workspace (escape hatch; irreversible) |
 
 ## Requirements

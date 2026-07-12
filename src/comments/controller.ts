@@ -37,7 +37,7 @@ export class AgentCommentsController implements vscode.Disposable {
   private pendingDraftThread: vscode.CommentThread | undefined;
 
   constructor(private readonly store: CommentStore, private readonly extensionUri: vscode.Uri) {
-    this.controller = vscode.comments.createCommentController('agentComments', 'Agent Comments');
+    this.controller = vscode.comments.createCommentController('agentComments', 'Agentic Comments');
     this.controller.commentingRangeProvider = {
       provideCommentingRanges: (document) => {
         if (document.uri.scheme !== 'file' || document.lineCount === 0) {
@@ -278,7 +278,7 @@ export class AgentCommentsController implements vscode.Disposable {
   async createComment(reply: vscode.CommentReply | undefined, authorType: AuthorType): Promise<void> {
     if (!reply?.thread) {
       vscode.window.showWarningMessage(
-        'Agent Comments: use the gutter "+" or select a range and choose "Add Comment" — this action only works from the comment input box.'
+        'Agentic Comments: use the gutter "+" or select a range and choose "Add Comment" — this action only works from the comment input box.'
       );
       return;
     }
@@ -302,7 +302,7 @@ export class AgentCommentsController implements vscode.Disposable {
   addCommentAtSelection(): void {
     const editor = vscode.window.activeTextEditor;
     if (!editor || editor.document.uri.scheme !== 'file') {
-      vscode.window.showWarningMessage('Agent Comments: open a file to add a comment.');
+      vscode.window.showWarningMessage('Agentic Comments: open a file to add a comment.');
       return;
     }
     this.pendingDraftThread?.dispose();
@@ -317,7 +317,7 @@ export class AgentCommentsController implements vscode.Disposable {
   async resolveThread(thread: vscode.CommentThread | undefined, resolvedByType: AuthorType): Promise<void> {
     const id = thread?.comments[0]?.contextValue;
     if (!thread || !id) {
-      vscode.window.showWarningMessage('Agent Comments: use the Resolve button on a comment thread.');
+      vscode.window.showWarningMessage('Agentic Comments: use the Resolve button on a comment thread.');
       return;
     }
     const filePath = toWorkspaceRelativePath(thread.uri);
@@ -327,7 +327,7 @@ export class AgentCommentsController implements vscode.Disposable {
   async reopenThread(thread: vscode.CommentThread | undefined): Promise<void> {
     const id = thread?.comments[0]?.contextValue;
     if (!thread || !id) {
-      vscode.window.showWarningMessage('Agent Comments: use the Reopen button on a resolved comment thread.');
+      vscode.window.showWarningMessage('Agentic Comments: use the Reopen button on a resolved comment thread.');
       return;
     }
     const filePath = toWorkspaceRelativePath(thread.uri);
@@ -340,7 +340,7 @@ export class AgentCommentsController implements vscode.Disposable {
     }
     const target = resolveWorkspaceRelativePath(filePath);
     if (!target) {
-      vscode.window.showWarningMessage(`Agent Comments: could not resolve "${filePath}" in this workspace.`);
+      vscode.window.showWarningMessage(`Agentic Comments: could not resolve "${filePath}" in this workspace.`);
       return;
     }
     const document = await vscode.workspace.openTextDocument(target);

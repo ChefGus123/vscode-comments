@@ -14,7 +14,7 @@ function wrapCommand<Args extends unknown[]>(
       await handler(...args);
     } catch (err) {
       const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
-      vscode.window.showErrorMessage(`Agent Comments: "${name}" failed — ${message}`);
+      vscode.window.showErrorMessage(`Agentic Comments: "${name}" failed — ${message}`);
     }
   };
 }
@@ -22,7 +22,7 @@ function wrapCommand<Args extends unknown[]>(
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   if (!context.storageUri) {
     vscode.window.showWarningMessage(
-      'Agent Comments: open a folder/workspace to use inline comments (no storage location without one).'
+      'Agentic Comments: open a folder/workspace to use inline comments (no storage location without one).'
     );
     return;
   }
@@ -49,7 +49,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         onDidChangeMcpServerDefinitions: onDidChangeMcpServerDefinitionsEmitter.event,
         provideMcpServerDefinitions: () => [
           new vscode.McpHttpServerDefinition(
-            'Agent Comments',
+            'Agentic Comments',
             vscode.Uri.parse(`http://127.0.0.1:${port}/mcp`),
             { [AUTH_HEADER]: mcpServer.token }
           ),
@@ -57,7 +57,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       })
     );
   } catch (err) {
-    vscode.window.showErrorMessage(`Agent Comments: failed to start MCP server: ${String(err)}`);
+    vscode.window.showErrorMessage(`Agentic Comments: failed to start MCP server: ${String(err)}`);
   }
 
   context.subscriptions.push(
@@ -111,13 +111,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       'agentComments.clearStorage',
       wrapCommand('clearStorage', async () => {
         const choice = await vscode.window.showWarningMessage(
-          'Delete all Agent Comments data for this workspace? This cannot be undone.',
+          'Delete all Agentic Comments data for this workspace? This cannot be undone.',
           { modal: true },
           'Delete'
         );
         if (choice === 'Delete') {
           await store.clearAll();
-          vscode.window.showInformationMessage('Agent Comments: workspace comment data cleared.');
+          vscode.window.showInformationMessage('Agentic Comments: workspace comment data cleared.');
         }
       })
     )
