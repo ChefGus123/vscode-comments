@@ -96,11 +96,10 @@ export class AgentCommentsTreeProvider implements vscode.TreeDataProvider<Node> 
 
       if (this.showResolved) {
         const archived = await this.store.listArchivedFilePaths();
-        for (const filePath of archived.keys()) {
-          if (!fileMap.has(filePath)) {
-            const data = await this.store.loadFile(filePath);
-            fileMap.set(filePath, { kind: 'file', filePath, unresolvedCount: 0, fileStatus: data.fileStatus });
-          }
+        const missing = Array.from(archived.keys()).filter((fp) => !fileMap.has(fp));
+        const loaded = await Promise.all(missing.map((fp) => this.store.loadFile(fp)));
+        for (const data of loaded) {
+          fileMap.set(data.filePath, { kind: 'file', filePath: data.filePath, unresolvedCount: 0, fileStatus: data.fileStatus });
         }
       }
 

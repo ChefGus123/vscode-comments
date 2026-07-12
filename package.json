@@ -136,12 +136,12 @@
         {
           "command": "agentComments.resolveComment",
           "group": "inline",
-          "when": "commentController == agentComments && commentThread =~ /unresolved/"
+          "when": "commentController == agentComments && commentThread == unresolved"
         },
         {
           "command": "agentComments.reopenComment",
           "group": "inline",
-          "when": "commentController == agentComments && commentThread =~ /resolved/"
+          "when": "commentController == agentComments && commentThread == resolved"
         }
       ],
       "view/title": [

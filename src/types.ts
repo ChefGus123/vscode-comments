@@ -34,6 +34,9 @@ export interface FileCommentData {
   filePath: string;
   fileStatus: FileStatus;
   comments: StoredComment[];
+  /** Whole-file content hash as of the last first-open reanchor check — lets a reopen skip
+   * per-comment re-anchoring entirely when the file hasn't changed since we last looked (§4/§9). */
+  contentHashAtLastCheck?: string;
 }
 
 export interface ArchivedComment extends StoredComment {

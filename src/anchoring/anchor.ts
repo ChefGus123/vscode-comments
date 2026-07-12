@@ -53,35 +53,49 @@ export function createAnchorFromContent(content: string, startLine0: number, end
 }
 
 /**
- * Shifts an anchor's line numbers by a single content change without any hashing, for edits that
- * don't touch the anchor's own lines. Keeps far-away comments cheap to track (§4: only the changed
- * range gets rehashed) while still following line-number drift from edits elsewhere in the file.
- * Returns undefined if the change overlaps the anchor's lines — the caller must re-anchor instead.
+ * Shifts an anchor's line numbers by a batch of simultaneous content changes (e.g. a multi-cursor
+ * edit) without any hashing, for edits that don't touch the anchor's own lines. Keeps far-away
+ * comments cheap to track (§4: only the changed range gets rehashed) while still following
+ * line-number drift from edits elsewhere in the file. Returns undefined if any change overlaps the
+ * anchor's lines — the caller must re-anchor instead.
+ *
+ * All entries in a single onDidChangeTextDocument batch carry ranges relative to the document as
+ * it was *before any of them were applied* — they are not sequentially re-based against each
+ * other. So every change must be evaluated against the anchor's one original position and the
+ * resulting deltas summed, rather than shifting the anchor after each change and comparing the
+ * next change's (still-original-coordinate) range against an already-moved target — the latter
+ * double-shifts whenever an earlier change in the array pushes the anchor's line count across a
+ * later change's original position.
  */
-export function shiftAnchorForChange(anchor: Anchor, change: vscode.TextDocumentContentChangeEvent): Anchor | undefined {
-  const changeStart0 = change.range.start.line;
-  const changeEnd0 = change.range.end.line;
-  const insertedLines = change.text.split('\n').length - 1;
-  const removedLines = changeEnd0 - changeStart0;
-  const delta = insertedLines - removedLines;
-
+export function shiftAnchorForChanges(
+  anchor: Anchor,
+  changes: readonly vscode.TextDocumentContentChangeEvent[]
+): Anchor | undefined {
   const anchorStart0 = anchor.lineHint - 1;
   const anchorEnd0 = anchor.endLineHint - 1;
+  let totalDelta = 0;
 
-  const overlaps = changeStart0 <= anchorEnd0 + 1 && changeEnd0 >= anchorStart0 - 1;
-  if (overlaps) {
-    return undefined;
+  for (const change of changes) {
+    const changeStart0 = change.range.start.line;
+    const changeEnd0 = change.range.end.line;
+
+    const overlaps = changeStart0 <= anchorEnd0 + 1 && changeEnd0 >= anchorStart0 - 1;
+    if (overlaps) {
+      return undefined;
+    }
+
+    if (changeEnd0 < anchorStart0) {
+      const insertedLines = change.text.split('\n').length - 1;
+      const removedLines = changeEnd0 - changeStart0;
+      totalDelta += insertedLines - removedLines;
+    }
   }
 
-  if (changeEnd0 < anchorStart0) {
-    return {
-      ...anchor,
-      lineHint: anchor.lineHint + delta,
-      endLineHint: anchor.endLineHint + delta,
-    };
-  }
-
-  return anchor;
+  return {
+    ...anchor,
+    lineHint: anchor.lineHint + totalDelta,
+    endLineHint: anchor.endLineHint + totalDelta,
+  };
 }
 
 /**

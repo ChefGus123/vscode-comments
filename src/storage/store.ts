@@ -9,6 +9,7 @@ import {
   ToolCommentView,
 } from '../types';
 import { archiveDirUri, archiveFileUri, commentsDirUri, commentsFileUri, resolveWorkspaceRelativePath } from './paths';
+import { hashContent } from '../anchoring/hash';
 
 const UNRESOLVED_WARNING_THRESHOLD = 200;
 const CACHE_CAP = 50;
@@ -45,14 +46,14 @@ async function ensureDir(uri: vscode.Uri): Promise<void> {
   }
 }
 
+// Note: no ensureDir here — comments/ and archive/ are created once in initialize(), which is
+// always awaited before any write can happen, so re-checking on every single write is pure overhead.
 async function writeJson(uri: vscode.Uri, data: unknown): Promise<void> {
-  await ensureDir(vscode.Uri.joinPath(uri, '..'));
   const bytes = Buffer.from(JSON.stringify(data, null, 2), 'utf8');
   await vscode.workspace.fs.writeFile(uri, bytes);
 }
 
 async function appendJsonl(uri: vscode.Uri, record: unknown): Promise<void> {
-  await ensureDir(vscode.Uri.joinPath(uri, '..'));
   const line = JSON.stringify(record) + '\n';
   let existing = '';
   try {
@@ -95,12 +96,11 @@ export class CommentStore {
       entries = [];
     }
 
-    for (const [name, type] of entries) {
-      if (type !== vscode.FileType.File || !name.endsWith('.json')) {
-        continue;
-      }
-      const uri = vscode.Uri.joinPath(commentsDirUri(this.storageUri), name);
-      const data = await readJson<FileCommentData>(uri);
+    const jsonFiles = entries.filter(([name, type]) => type === vscode.FileType.File && name.endsWith('.json'));
+    const parsed = await Promise.all(
+      jsonFiles.map(([name]) => readJson<FileCommentData>(vscode.Uri.joinPath(commentsDirUri(this.storageUri), name)))
+    );
+    for (const data of parsed) {
       if (!data) {
         continue;
       }
@@ -121,10 +121,15 @@ export class CommentStore {
   private queueWrite<T>(filePath: string, op: () => Promise<T>): Promise<T> {
     const prior = this.writeQueues.get(filePath) ?? Promise.resolve();
     const next = prior.then(op, op);
-    this.writeQueues.set(
-      filePath,
-      next.catch(() => undefined)
-    );
+    const settled = next.catch(() => undefined);
+    this.writeQueues.set(filePath, settled);
+    // Bound the map to files with a write actually in flight — otherwise it grows by one entry
+    // per distinct file path ever touched for the life of the extension host (§2).
+    void settled.then(() => {
+      if (this.writeQueues.get(filePath) === settled) {
+        this.writeQueues.delete(filePath);
+      }
+    });
     return next;
   }
 
@@ -275,19 +280,38 @@ export class CommentStore {
     });
   }
 
+  /**
+   * Like updateAnchors, but skips the (potentially expensive, per-comment) reanchor callback
+   * entirely when a whole-file content hash shows the file hasn't changed since the last check —
+   * turning "first open in a session" from O(comments × window-scan) into one O(file size) hash
+   * comparison in the common case where nothing happened while the file was closed (§4/§9).
+   */
+  async reanchorIfFileChanged(
+    filePath: string,
+    currentContent: string,
+    updater: (comments: StoredComment[]) => boolean
+  ): Promise<void> {
+    const currentHash = hashContent(currentContent);
+    await this.queueWrite(filePath, async () => {
+      const data = await this.loadFile(filePath);
+      if (data.contentHashAtLastCheck === currentHash) {
+        return;
+      }
+      updater(data.comments);
+      data.contentHashAtLastCheck = currentHash;
+      await this.persist(data, 'reanchor');
+    });
+  }
+
   async listUnresolved(filePath?: string): Promise<ToolCommentView[]> {
     const filePaths = filePath ? [filePath] : Array.from(this.index.keys());
-    const results: ToolCommentView[] = [];
-    for (const fp of filePaths) {
-      const data = await this.loadFile(fp);
-      for (const c of data.comments) {
-        if (c.status !== 'unresolved') {
-          continue;
-        }
-        results.push(toView(fp, data.fileStatus, c));
-      }
-    }
-    return results;
+    const perFile = await Promise.all(
+      filePaths.map(async (fp) => {
+        const data = await this.loadFile(fp);
+        return data.comments.filter((c) => c.status === 'unresolved').map((c) => toView(fp, data.fileStatus, c));
+      })
+    );
+    return perFile.flat();
   }
 
   async getComments(filePath: string, includeResolved: boolean): Promise<ToolCommentView[]> {
@@ -315,30 +339,37 @@ export class CommentStore {
 
   /** Files that have any archived (resolved) comments, with the count in each — for the "show resolved" sidebar mode. */
   async listArchivedFilePaths(): Promise<Map<string, number>> {
-    const result = new Map<string, number>();
     let entries: [string, vscode.FileType][] = [];
     try {
       entries = await vscode.workspace.fs.readDirectory(archiveDirUri(this.storageUri));
     } catch {
       entries = [];
     }
-    for (const [name, type] of entries) {
-      if (type !== vscode.FileType.File || !name.endsWith('.jsonl')) {
-        continue;
-      }
-      try {
-        const bytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(archiveDirUri(this.storageUri), name));
-        const lines = Buffer.from(bytes)
-          .toString('utf8')
-          .split('\n')
-          .filter((l) => l.trim().length > 0);
-        if (lines.length === 0) {
-          continue;
+    const shards = entries.filter(([name, type]) => type === vscode.FileType.File && name.endsWith('.jsonl'));
+
+    const parsed = await Promise.all(
+      shards.map(async ([name]) => {
+        try {
+          const bytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(archiveDirUri(this.storageUri), name));
+          const lines = Buffer.from(bytes)
+            .toString('utf8')
+            .split('\n')
+            .filter((l) => l.trim().length > 0);
+          if (lines.length === 0) {
+            return undefined;
+          }
+          const first = JSON.parse(lines[0]) as ArchivedComment;
+          return { filePath: first.filePath, count: lines.length };
+        } catch {
+          return undefined;
         }
-        const first = JSON.parse(lines[0]) as ArchivedComment;
-        result.set(first.filePath, lines.length);
-      } catch {
-        // skip unreadable/corrupt archive shard
+      })
+    );
+
+    const result = new Map<string, number>();
+    for (const entry of parsed) {
+      if (entry) {
+        result.set(entry.filePath, entry.count);
       }
     }
     return result;

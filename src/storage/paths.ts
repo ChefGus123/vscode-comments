@@ -53,3 +53,17 @@ export function resolveWorkspaceRelativePath(relativePath: string): vscode.Uri |
   }
   return vscode.Uri.joinPath(folders[0].uri, normalized);
 }
+
+/**
+ * Round-trips a caller-supplied path (as given by an MCP tool caller, in whatever form — OS-native
+ * backslashes, a missing multi-root prefix, etc.) through the same resolution the UI uses, so both
+ * sides provably agree on one storage key. Returns undefined if it can't be resolved to a file in
+ * the current workspace at all.
+ */
+export function canonicalizeRelativePath(relativePath: string): string | undefined {
+  const uri = resolveWorkspaceRelativePath(relativePath);
+  if (!uri) {
+    return undefined;
+  }
+  return toWorkspaceRelativePath(uri);
+}

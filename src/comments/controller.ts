@@ -1,8 +1,8 @@
 import * as vscode from 'vscode';
 import { CommentStore, StoreChangeEvent } from '../storage/store';
 import { resolveWorkspaceRelativePath, toWorkspaceRelativePath } from '../storage/paths';
-import { createAnchor, reanchor, shiftAnchorForChange } from '../anchoring/anchor';
-import { Anchor, AnchorStatus, AuthorType, StoredComment } from '../types';
+import { createAnchor, reanchor, shiftAnchorForChanges } from '../anchoring/anchor';
+import { AnchorStatus, AuthorType, StoredComment } from '../types';
 
 const DEBOUNCE_MS = 400;
 
@@ -91,7 +91,9 @@ export class AgentCommentsController implements vscode.Disposable {
     // onDidChangeTextDocument can't have told us since no editor was watching it (§4.1).
     if (!this.reanchoredOnOpen.has(filePath)) {
       this.reanchoredOnOpen.add(filePath);
-      await this.store.updateAnchors(filePath, (comments) => {
+      // reanchorIfFileChanged short-circuits via a whole-file hash when nothing changed while the
+      // file was closed, so this only pays the per-comment window-scan cost when something did.
+      await this.store.reanchorIfFileChanged(filePath, document.getText(), (comments) => {
         let changed = false;
         for (const comment of comments) {
           const updated = reanchor(document, comment.anchor);
@@ -205,6 +207,11 @@ export class AgentCommentsController implements vscode.Disposable {
   }
 
   private evictIfHidden(document: vscode.TextDocument): void {
+    if (this.pendingDraftThread && this.pendingDraftThread.uri.toString() === document.uri.toString()) {
+      this.pendingDraftThread.dispose();
+      this.pendingDraftThread = undefined;
+    }
+
     const stillVisible = vscode.window.visibleTextEditors.some((e) => e.document === document);
     if (stillVisible || document.uri.scheme !== 'file') {
       return;
@@ -252,16 +259,8 @@ export class AgentCommentsController implements vscode.Disposable {
     await this.store.updateAnchors(filePath, (comments) => {
       let changed = false;
       for (const comment of comments) {
-        let anchor: Anchor | undefined = comment.anchor;
-        for (const change of changes) {
-          if (!anchor) {
-            break;
-          }
-          anchor = shiftAnchorForChange(anchor, change);
-        }
-        if (!anchor) {
-          anchor = reanchor(document, comment.anchor);
-        }
+        const shifted = shiftAnchorForChanges(comment.anchor, changes);
+        const anchor = shifted ?? reanchor(document, comment.anchor);
         if (
           anchor.lineHint !== comment.anchor.lineHint ||
           anchor.endLineHint !== comment.anchor.endLineHint ||

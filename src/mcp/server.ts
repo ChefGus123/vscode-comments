@@ -1,14 +1,16 @@
 import * as http from 'http';
 import { AddressInfo } from 'net';
-import { randomUUID } from 'crypto';
+import { randomUUID, randomBytes } from 'crypto';
 import * as vscode from 'vscode';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
 import { CommentStore } from '../storage/store';
-import { resolveWorkspaceRelativePath } from '../storage/paths';
+import { canonicalizeRelativePath, resolveWorkspaceRelativePath, toWorkspaceRelativePath } from '../storage/paths';
 import { createAnchorFromContent } from '../anchoring/anchor';
 import { ToolCommentView } from '../types';
+
+export const AUTH_HEADER = 'x-agent-comments-token';
 
 /**
  * Lean wire format for tool responses — every field costs tokens on every call, so fields that are
@@ -54,9 +56,24 @@ function toMcpView(c: ToolCommentView): McpCommentView {
   return view;
 }
 
-async function readFileText(uri: vscode.Uri): Promise<string> {
+/** Prefers a live open/dirty buffer over disk content, so a comment anchors against what's actually
+ * on screen rather than the last-saved version (§3.3 — tools must work with no open editor as the
+ * normal case, but must not ignore one when it happens to exist and disagrees with disk). */
+async function readCurrentText(uri: vscode.Uri): Promise<string> {
+  const open = vscode.workspace.textDocuments.find((doc) => doc.uri.toString() === uri.toString());
+  if (open) {
+    return open.getText();
+  }
   const bytes = await vscode.workspace.fs.readFile(uri);
   return Buffer.from(bytes).toString('utf8');
+}
+
+function resolveCanonicalFile(file: string): { canonicalFile: string } | { error: string } {
+  const canonicalFile = canonicalizeRelativePath(file);
+  if (!canonicalFile) {
+    return { error: `Could not resolve "${file}" to a file in this workspace.` };
+  }
+  return { canonicalFile };
 }
 
 export class AgentCommentsMcpServer implements vscode.Disposable {
@@ -64,11 +81,18 @@ export class AgentCommentsMcpServer implements vscode.Disposable {
   private transport: StreamableHTTPServerTransport | undefined;
   private mcpServer: McpServer | undefined;
   private _port: number | undefined;
+  private readonly authToken = randomBytes(24).toString('hex');
 
   constructor(private readonly store: CommentStore) {}
 
   get port(): number | undefined {
     return this._port;
+  }
+
+  /** Shared secret VS Code sends back on every request (via McpHttpServerDefinition's headers) so
+   * an unrelated local process that merely discovers our ephemeral port can't read/write comments. */
+  get token(): string {
+    return this.authToken;
   }
 
   async start(): Promise<number> {
@@ -83,6 +107,11 @@ export class AgentCommentsMcpServer implements vscode.Disposable {
     const httpServer = http.createServer((req, res) => {
       if (!req.url || !req.url.startsWith('/mcp')) {
         res.statusCode = 404;
+        res.end();
+        return;
+      }
+      if (req.headers[AUTH_HEADER] !== this.authToken) {
+        res.statusCode = 401;
         res.end();
         return;
       }
@@ -121,7 +150,15 @@ export class AgentCommentsMcpServer implements vscode.Disposable {
         },
       },
       async ({ file }) => {
-        const comments = await this.store.listUnresolved(file);
+        let canonicalFile: string | undefined;
+        if (file !== undefined) {
+          const resolved = resolveCanonicalFile(file);
+          if ('error' in resolved) {
+            return asError(resolved.error);
+          }
+          canonicalFile = resolved.canonicalFile;
+        }
+        const comments = await this.store.listUnresolved(canonicalFile);
         return asResult({ comments: comments.map(toMcpView) });
       }
     );
@@ -139,7 +176,11 @@ export class AgentCommentsMcpServer implements vscode.Disposable {
         },
       },
       async ({ file, includeResolved }) => {
-        const comments = await this.store.getComments(file, includeResolved ?? false);
+        const resolved = resolveCanonicalFile(file);
+        if ('error' in resolved) {
+          return asError(resolved.error);
+        }
+        const comments = await this.store.getComments(resolved.canonicalFile, includeResolved ?? false);
         return asResult({ comments: comments.map(toMcpView) });
       }
     );
@@ -162,16 +203,17 @@ export class AgentCommentsMcpServer implements vscode.Disposable {
         if (!uri) {
           return asError(`No workspace folder open to resolve "${file}".`);
         }
+        const canonicalFile = toWorkspaceRelativePath(uri);
         let content: string;
         try {
-          content = await readFileText(uri);
+          content = await readCurrentText(uri);
         } catch {
           return asError(`File not found: ${file}`);
         }
         const startLine0 = line - 1;
         const endLine0 = (endLine ?? line) - 1;
         const anchor = createAnchorFromContent(content, startLine0, Math.max(startLine0, endLine0));
-        const comment = await this.store.addComment(file, anchor, text, { type: 'agent' });
+        const comment = await this.store.addComment(canonicalFile, anchor, text, { type: 'agent' });
         return asResult({ id: comment.id, status: 'created' as const });
       }
     );
@@ -187,7 +229,11 @@ export class AgentCommentsMcpServer implements vscode.Disposable {
         },
       },
       async ({ file, id }) => {
-        const comment = await this.store.resolveComment(file, id, { type: 'agent' });
+        const resolved = resolveCanonicalFile(file);
+        if ('error' in resolved) {
+          return asError(resolved.error);
+        }
+        const comment = await this.store.resolveComment(resolved.canonicalFile, id, { type: 'agent' });
         if (!comment) {
           return asError(`Comment not found: ${id}`);
         }

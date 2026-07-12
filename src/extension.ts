@@ -3,7 +3,7 @@ import { CommentStore } from './storage/store';
 import { AgentCommentsController } from './comments/controller';
 import { AgentCommentsTreeProvider, CommentNode } from './ui/treeView';
 import { AgentCommentsDecorationProvider } from './ui/decorations';
-import { AgentCommentsMcpServer } from './mcp/server';
+import { AgentCommentsMcpServer, AUTH_HEADER } from './mcp/server';
 
 function wrapCommand<Args extends unknown[]>(
   name: string,
@@ -48,7 +48,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       vscode.lm.registerMcpServerDefinitionProvider('agentComments.mcpProvider', {
         onDidChangeMcpServerDefinitions: onDidChangeMcpServerDefinitionsEmitter.event,
         provideMcpServerDefinitions: () => [
-          new vscode.McpHttpServerDefinition('Agent Comments', vscode.Uri.parse(`http://127.0.0.1:${port}/mcp`)),
+          new vscode.McpHttpServerDefinition(
+            'Agent Comments',
+            vscode.Uri.parse(`http://127.0.0.1:${port}/mcp`),
+            { [AUTH_HEADER]: mcpServer.token }
+          ),
         ],
       })
     );
