@@ -1,7 +1,9 @@
 {
-  "name": "vscode-comments",
-  "version": "1.0.0",
-  "description": "",
+  "name": "agent-comments",
+  "displayName": "Agent Comments",
+  "description": "Leave GitHub-style inline review comments on live code and expose them to AI coding agents via MCP.",
+  "version": "0.1.0",
+  "publisher": "ChefGus123",
   "homepage": "https://github.com/ChefGus123/vscode-comments#readme",
   "bugs": {
     "url": "https://github.com/ChefGus123/vscode-comments/issues"
@@ -13,8 +15,121 @@
   "license": "ISC",
   "author": "",
   "type": "commonjs",
-  "main": "index.js",
+  "main": "./dist/extension.js",
+  "engines": {
+    "vscode": "^1.101.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "agentComments.addComment",
+        "title": "Add Comment",
+        "category": "Agent Comments"
+      },
+      {
+        "command": "agentComments.resolveComment",
+        "title": "Resolve",
+        "category": "Agent Comments",
+        "icon": "$(check)"
+      },
+      {
+        "command": "agentComments.reopenComment",
+        "title": "Reopen",
+        "category": "Agent Comments",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "agentComments.revealComment",
+        "title": "Reveal Comment",
+        "category": "Agent Comments"
+      },
+      {
+        "command": "agentComments.clearStorage",
+        "title": "Clear All Comment Data for This Workspace",
+        "category": "Agent Comments"
+      },
+      {
+        "command": "agentComments.refreshTree",
+        "title": "Refresh",
+        "category": "Agent Comments",
+        "icon": "$(refresh)"
+      }
+    ],
+    "menus": {
+      "comments/commentThread/context": [
+        {
+          "command": "agentComments.addComment",
+          "group": "inline",
+          "when": "commentController == agentComments"
+        }
+      ],
+      "comments/commentThread/title": [
+        {
+          "command": "agentComments.resolveComment",
+          "group": "inline",
+          "when": "commentController == agentComments && commentThread =~ /unresolved/"
+        },
+        {
+          "command": "agentComments.reopenComment",
+          "group": "inline",
+          "when": "commentController == agentComments && commentThread =~ /resolved/"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "agentComments.refreshTree",
+          "when": "view == agentCommentsView",
+          "group": "navigation"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "agentComments",
+          "title": "Agent Comments",
+          "icon": "media/comment-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "agentComments": [
+        {
+          "id": "agentCommentsView",
+          "name": "Unresolved Comments"
+        }
+      ]
+    },
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "agentComments.mcpProvider",
+        "label": "Agent Comments"
+      }
+    ]
+  },
   "scripts": {
+    "typecheck": "tsc --noEmit -p ./",
+    "compile": "npm run typecheck && node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "package": "npm run typecheck && node esbuild.js --production",
+    "vscode:prepublish": "npm run package",
     "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "@types/vscode": "^1.101.0",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.24.0",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.24.1"
   }
 }
