@@ -2,7 +2,7 @@
   "name": "agentic-comments",
   "displayName": "Agentic Comments",
   "description": "Leave GitHub-style inline review comments on live code and expose them to AI coding agents via MCP.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "IlayAmir",
   "icon": "media/icon.png",
   "homepage": "https://github.com/ChefGus123/vscode-comments#readme",
@@ -173,17 +173,17 @@
         {
           "command": "agentComments.refreshTree",
           "when": "view == agentCommentsView",
-          "group": "navigation"
+          "group": "navigation@1"
         },
         {
           "command": "agentComments.showResolved",
           "when": "view == agentCommentsView && !agentComments.showResolved",
-          "group": "navigation"
+          "group": "navigation@2"
         },
         {
           "command": "agentComments.hideResolved",
           "when": "view == agentCommentsView && agentComments.showResolved",
-          "group": "navigation"
+          "group": "navigation@2"
         }
       ],
       "view/item/context": [
