@@ -11,3 +11,7 @@ agent-comments-spec.md
 .claude/**
 PRD.md
 CLAUDE.md
+test/**
+coverage/**
+jest.config.js
+babel.config.js
