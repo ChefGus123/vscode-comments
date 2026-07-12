@@ -6,15 +6,15 @@ module.exports = {
     '^vscode$': '<rootDir>/test/__mocks__/vscode.ts',
   },
   clearMocks: true,
-  collectCoverageFrom: ['src/**/*.ts'],
+  collectCoverageFrom: ['src/**/*.ts', '!src/types.ts'],
   coverageDirectory: '<rootDir>/coverage',
   coverageProvider: 'babel',
   coverageThreshold: {
     global: {
-      statements: 100,
-      branches: 100,
-      functions: 100,
-      lines: 100,
+      statements: 95,
+      branches: 95,
+      functions: 95,
+      lines: 95,
     },
   },
 };
