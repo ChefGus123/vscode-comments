@@ -8,7 +8,7 @@ import {
   StoredComment,
   ToolCommentView,
 } from '../types';
-import { archiveFileUri, commentsDirUri, commentsFileUri, resolveWorkspaceRelativePath } from './paths';
+import { archiveDirUri, archiveFileUri, commentsDirUri, commentsFileUri, resolveWorkspaceRelativePath } from './paths';
 
 const UNRESOLVED_WARNING_THRESHOLD = 200;
 const CACHE_CAP = 50;
@@ -224,6 +224,7 @@ export class CommentStore {
       data.comments.splice(idx, 1);
       await appendJsonl(archiveFileUri(this.storageUri, filePath), {
         ...comment,
+        filePath,
         archivedAt: comment.updatedAt,
       } as ArchivedComment);
       await this.persist(data, 'resolve', comment);
@@ -255,7 +256,7 @@ export class CommentStore {
         Buffer.from(archived.map((c) => JSON.stringify(c)).join('\n') + (archived.length ? '\n' : ''), 'utf8')
       );
 
-      const { archivedAt: _archivedAt, ...rest } = comment;
+      const { archivedAt: _archivedAt, filePath: _filePath, ...rest } = comment;
       const reopened: StoredComment = { ...rest, status: 'unresolved', resolvedBy: null, updatedAt: new Date().toISOString() };
       const data = await this.loadFile(filePath);
       data.comments.push(reopened);
@@ -310,6 +311,37 @@ export class CommentStore {
       }
     }
     return results;
+  }
+
+  /** Files that have any archived (resolved) comments, with the count in each — for the "show resolved" sidebar mode. */
+  async listArchivedFilePaths(): Promise<Map<string, number>> {
+    const result = new Map<string, number>();
+    let entries: [string, vscode.FileType][] = [];
+    try {
+      entries = await vscode.workspace.fs.readDirectory(archiveDirUri(this.storageUri));
+    } catch {
+      entries = [];
+    }
+    for (const [name, type] of entries) {
+      if (type !== vscode.FileType.File || !name.endsWith('.jsonl')) {
+        continue;
+      }
+      try {
+        const bytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(archiveDirUri(this.storageUri), name));
+        const lines = Buffer.from(bytes)
+          .toString('utf8')
+          .split('\n')
+          .filter((l) => l.trim().length > 0);
+        if (lines.length === 0) {
+          continue;
+        }
+        const first = JSON.parse(lines[0]) as ArchivedComment;
+        result.set(first.filePath, lines.length);
+      } catch {
+        // skip unreadable/corrupt archive shard
+      }
+    }
+    return result;
   }
 
   async clearAll(): Promise<void> {

@@ -1,9 +1,16 @@
 import * as crypto from 'crypto';
 import * as vscode from 'vscode';
 
-/** Normalizes a filesystem URI to a workspace-relative, forward-slash path used as the stable comment key. */
+/**
+ * Normalizes a filesystem URI to a workspace-relative, forward-slash path used as the stable
+ * comment key. Only prefixed with the workspace folder name in multi-root workspaces (to avoid
+ * same-named-file collisions across roots, §3) — single-root workspaces use the plain path, which
+ * is also what MCP tool callers (agents) pass, so both sides must agree on this or comments
+ * silently split into two different keys for the same file.
+ */
 export function toWorkspaceRelativePath(uri: vscode.Uri): string {
-  const rel = vscode.workspace.asRelativePath(uri, true);
+  const multiRoot = (vscode.workspace.workspaceFolders?.length ?? 0) > 1;
+  const rel = vscode.workspace.asRelativePath(uri, multiRoot);
   return rel.replace(/\\/g, '/');
 }
 

@@ -1,9 +1,23 @@
 import * as vscode from 'vscode';
 import { CommentStore } from './storage/store';
 import { AgentCommentsController } from './comments/controller';
-import { AgentCommentsTreeProvider } from './ui/treeView';
+import { AgentCommentsTreeProvider, CommentNode } from './ui/treeView';
 import { AgentCommentsDecorationProvider } from './ui/decorations';
 import { AgentCommentsMcpServer } from './mcp/server';
+
+function wrapCommand<Args extends unknown[]>(
+  name: string,
+  handler: (...args: Args) => unknown
+): (...args: Args) => Promise<void> {
+  return async (...args: Args) => {
+    try {
+      await handler(...args);
+    } catch (err) {
+      const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
+      vscode.window.showErrorMessage(`Agent Comments: "${name}" failed — ${message}`);
+    }
+  };
+}
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   if (!context.storageUri) {
@@ -43,30 +57,66 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('agentComments.addComment', (reply: vscode.CommentReply) =>
-      controller.createComment(reply, 'user')
+    vscode.commands.registerCommand(
+      'agentComments.addComment',
+      wrapCommand('addComment', (reply?: vscode.CommentReply) => controller.createComment(reply, 'user'))
     ),
-    vscode.commands.registerCommand('agentComments.resolveComment', (thread: vscode.CommentThread) =>
-      controller.resolveThread(thread, 'user')
+    vscode.commands.registerCommand(
+      'agentComments.resolveComment',
+      wrapCommand('resolveComment', (thread?: vscode.CommentThread) => controller.resolveThread(thread, 'user'))
     ),
-    vscode.commands.registerCommand('agentComments.reopenComment', (thread: vscode.CommentThread) =>
-      controller.reopenThread(thread)
+    vscode.commands.registerCommand(
+      'agentComments.reopenComment',
+      wrapCommand('reopenComment', (thread?: vscode.CommentThread) => controller.reopenThread(thread))
     ),
-    vscode.commands.registerCommand('agentComments.revealComment', (file: string, line: number) =>
-      controller.revealComment(file, line)
+    vscode.commands.registerCommand(
+      'agentComments.revealComment',
+      wrapCommand('revealComment', (file?: string, line?: number, commentId?: string) =>
+        controller.revealComment(file, line, commentId)
+      )
     ),
-    vscode.commands.registerCommand('agentComments.refreshTree', () => treeProvider.refresh()),
-    vscode.commands.registerCommand('agentComments.clearStorage', async () => {
-      const choice = await vscode.window.showWarningMessage(
-        'Delete all Agent Comments data for this workspace? This cannot be undone.',
-        { modal: true },
-        'Delete'
-      );
-      if (choice === 'Delete') {
-        await store.clearAll();
-        vscode.window.showInformationMessage('Agent Comments: workspace comment data cleared.');
-      }
-    })
+    vscode.commands.registerCommand(
+      'agentComments.addCommentAtSelection',
+      wrapCommand('addCommentAtSelection', () => controller.addCommentAtSelection())
+    ),
+    vscode.commands.registerCommand(
+      'agentComments.refreshTree',
+      wrapCommand('refreshTree', () => treeProvider.refresh())
+    ),
+    vscode.commands.registerCommand(
+      'agentComments.showResolved',
+      wrapCommand('showResolved', () => treeProvider.setShowResolved(true))
+    ),
+    vscode.commands.registerCommand(
+      'agentComments.hideResolved',
+      wrapCommand('hideResolved', () => treeProvider.setShowResolved(false))
+    ),
+    vscode.commands.registerCommand(
+      'agentComments.resolveCommentInTree',
+      wrapCommand('resolveCommentInTree', (node?: CommentNode) =>
+        node ? store.resolveComment(node.comment.file, node.comment.id, { type: 'user' }) : undefined
+      )
+    ),
+    vscode.commands.registerCommand(
+      'agentComments.reopenCommentInTree',
+      wrapCommand('reopenCommentInTree', (node?: CommentNode) =>
+        node ? store.reopenComment(node.comment.file, node.comment.id) : undefined
+      )
+    ),
+    vscode.commands.registerCommand(
+      'agentComments.clearStorage',
+      wrapCommand('clearStorage', async () => {
+        const choice = await vscode.window.showWarningMessage(
+          'Delete all Agent Comments data for this workspace? This cannot be undone.',
+          { modal: true },
+          'Delete'
+        );
+        if (choice === 'Delete') {
+          await store.clearAll();
+          vscode.window.showInformationMessage('Agent Comments: workspace comment data cleared.');
+        }
+      })
+    )
   );
 }
 

@@ -3,7 +3,8 @@
   "displayName": "Agent Comments",
   "description": "Leave GitHub-style inline review comments on live code and expose them to AI coding agents via MCP.",
   "version": "0.1.0",
-  "publisher": "ChefGus123",
+  "publisher": "IlayAmir",
+  "icon": "media/icon.png",
   "homepage": "https://github.com/ChefGus123/vscode-comments#readme",
   "bugs": {
     "url": "https://github.com/ChefGus123/vscode-comments/issues"
@@ -13,7 +14,7 @@
     "url": "git+https://github.com/ChefGus123/vscode-comments.git"
   },
   "license": "ISC",
-  "author": "",
+  "author": "Ilay Amir",
   "type": "commonjs",
   "main": "./dist/extension.js",
   "engines": {
@@ -59,9 +60,71 @@
         "title": "Refresh",
         "category": "Agent Comments",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "agentComments.showResolved",
+        "title": "Show Resolved Comments",
+        "category": "Agent Comments",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "agentComments.hideResolved",
+        "title": "Hide Resolved Comments",
+        "category": "Agent Comments",
+        "icon": "$(eye-closed)"
+      },
+      {
+        "command": "agentComments.resolveCommentInTree",
+        "title": "Resolve",
+        "category": "Agent Comments",
+        "icon": "$(check)"
+      },
+      {
+        "command": "agentComments.reopenCommentInTree",
+        "title": "Reopen",
+        "category": "Agent Comments",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "agentComments.addCommentAtSelection",
+        "title": "Add Comment",
+        "category": "Agent Comments"
       }
     ],
     "menus": {
+      "commandPalette": [
+        {
+          "command": "agentComments.addComment",
+          "when": "false"
+        },
+        {
+          "command": "agentComments.resolveComment",
+          "when": "false"
+        },
+        {
+          "command": "agentComments.reopenComment",
+          "when": "false"
+        },
+        {
+          "command": "agentComments.revealComment",
+          "when": "false"
+        },
+        {
+          "command": "agentComments.resolveCommentInTree",
+          "when": "false"
+        },
+        {
+          "command": "agentComments.reopenCommentInTree",
+          "when": "false"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "agentComments.addCommentAtSelection",
+          "group": "9_comment",
+          "when": "editorTextFocus && resourceScheme == file"
+        }
+      ],
       "comments/commentThread/context": [
         {
           "command": "agentComments.addComment",
@@ -86,6 +149,28 @@
           "command": "agentComments.refreshTree",
           "when": "view == agentCommentsView",
           "group": "navigation"
+        },
+        {
+          "command": "agentComments.showResolved",
+          "when": "view == agentCommentsView && !agentComments.showResolved",
+          "group": "navigation"
+        },
+        {
+          "command": "agentComments.hideResolved",
+          "when": "view == agentCommentsView && agentComments.showResolved",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "agentComments.resolveCommentInTree",
+          "when": "view == agentCommentsView && viewItem == agentCommentsCommentUnresolved",
+          "group": "inline"
+        },
+        {
+          "command": "agentComments.reopenCommentInTree",
+          "when": "view == agentCommentsView && viewItem == agentCommentsCommentResolved",
+          "group": "inline"
         }
       ]
     },
@@ -102,7 +187,7 @@
       "agentComments": [
         {
           "id": "agentCommentsView",
-          "name": "Unresolved Comments"
+          "name": "Comments"
         }
       ]
     },

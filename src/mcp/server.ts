@@ -8,20 +8,51 @@ import { z } from 'zod';
 import { CommentStore } from '../storage/store';
 import { resolveWorkspaceRelativePath } from '../storage/paths';
 import { createAnchorFromContent } from '../anchoring/anchor';
+import { ToolCommentView } from '../types';
 
-const commentViewShape = {
-  id: z.string(),
-  file: z.string(),
-  fileStatus: z.enum(['ok', 'file-not-found']),
-  line: z.number(),
-  endLine: z.number().optional(),
-  anchorStatus: z.enum(['exact', 'approximate', 'orphaned']),
-  author: z.object({ type: z.enum(['user', 'agent']) }),
-  text: z.string(),
-  createdAt: z.string(),
-  status: z.enum(['unresolved', 'resolved']).optional(),
-  resolvedBy: z.object({ type: z.enum(['user', 'agent']) }).nullable().optional(),
-};
+/**
+ * Lean wire format for tool responses — every field costs tokens on every call, so fields that are
+ * almost always the same value (fileStatus "ok", anchor "exact", status "unresolved") are omitted
+ * rather than spelled out, and author/resolvedBy are flattened from {type: "x"} to plain "x".
+ */
+interface McpCommentView {
+  id: string;
+  file: string;
+  line: number;
+  endLine?: number;
+  text: string;
+  author: 'user' | 'agent';
+  fileStatus?: 'file-not-found';
+  locationUncertain?: true;
+  status?: 'resolved';
+  resolvedBy?: 'user' | 'agent';
+}
+
+function toMcpView(c: ToolCommentView): McpCommentView {
+  const view: McpCommentView = {
+    id: c.id,
+    file: c.file,
+    line: c.line,
+    text: c.text,
+    author: c.author.type,
+  };
+  if (c.endLine !== undefined) {
+    view.endLine = c.endLine;
+  }
+  if (c.fileStatus !== 'ok') {
+    view.fileStatus = c.fileStatus;
+  }
+  if (c.anchorStatus !== 'exact') {
+    view.locationUncertain = true;
+  }
+  if (c.status === 'resolved') {
+    view.status = 'resolved';
+    if (c.resolvedBy) {
+      view.resolvedBy = c.resolvedBy.type;
+    }
+  }
+  return view;
+}
 
 async function readFileText(uri: vscode.Uri): Promise<string> {
   const bytes = await vscode.workspace.fs.readFile(uri);
@@ -82,15 +113,16 @@ export class AgentCommentsMcpServer implements vscode.Disposable {
       {
         title: 'List unresolved comments',
         description:
-          'Lists unresolved review comments left by the developer or other agents, anchored to exact code locations. Omit "file" to list across the whole workspace.',
+          'Lists unresolved review comments left by the developer or other agents, anchored to exact code locations. Omit "file" to list across the whole workspace. ' +
+          'Fields are omitted when not notable: "fileStatus" only appears as "file-not-found" (the commented file is missing — comment kept, not auto-relocated); ' +
+          '"locationUncertain: true" means the code around the comment changed and the line number may be off — check nearby lines or the comment text itself before trusting it.',
         inputSchema: {
           file: z.string().optional().describe('Workspace-relative file path. Omit for the whole workspace.'),
         },
-        outputSchema: { comments: z.array(z.object(commentViewShape)) },
       },
       async ({ file }) => {
         const comments = await this.store.listUnresolved(file);
-        return asResult({ comments });
+        return asResult({ comments: comments.map(toMcpView) });
       }
     );
 
@@ -99,16 +131,16 @@ export class AgentCommentsMcpServer implements vscode.Disposable {
       {
         title: 'Get comments for a file',
         description:
-          'Gets all comments for a specific file, optionally including resolved ones (read from the archive).',
+          'Gets all comments for a specific file, optionally including resolved ones (read from the archive). ' +
+          'A "status": "resolved" field appears only on resolved entries (everything else is unresolved); "resolvedBy" ("user" or "agent") comes with it.',
         inputSchema: {
           file: z.string().describe('Workspace-relative file path.'),
           includeResolved: z.boolean().optional().default(false),
         },
-        outputSchema: { comments: z.array(z.object(commentViewShape)) },
       },
       async ({ file, includeResolved }) => {
         const comments = await this.store.getComments(file, includeResolved ?? false);
-        return asResult({ comments });
+        return asResult({ comments: comments.map(toMcpView) });
       }
     );
 
@@ -124,7 +156,6 @@ export class AgentCommentsMcpServer implements vscode.Disposable {
           endLine: z.number().int().min(1).optional().describe('1-indexed end line, for range comments.'),
           text: z.string().min(1),
         },
-        outputSchema: { id: z.string(), status: z.literal('created') },
       },
       async ({ file, line, endLine, text }) => {
         const uri = resolveWorkspaceRelativePath(file);
@@ -154,28 +185,20 @@ export class AgentCommentsMcpServer implements vscode.Disposable {
           file: z.string().describe('Workspace-relative file path.'),
           id: z.string(),
         },
-        outputSchema: {
-          id: z.string(),
-          status: z.literal('resolved'),
-          resolvedBy: z.object({ type: z.literal('agent') }),
-        },
       },
       async ({ file, id }) => {
         const comment = await this.store.resolveComment(file, id, { type: 'agent' });
         if (!comment) {
           return asError(`Comment not found: ${id}`);
         }
-        return asResult({ id: comment.id, status: 'resolved' as const, resolvedBy: { type: 'agent' as const } });
+        return asResult({ id: comment.id, status: 'resolved' as const, resolvedBy: 'agent' as const });
       }
     );
   }
 }
 
-function asResult(structuredContent: Record<string, unknown>) {
-  return {
-    content: [{ type: 'text' as const, text: JSON.stringify(structuredContent, null, 2) }],
-    structuredContent,
-  };
+function asResult(payload: Record<string, unknown>) {
+  return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
 }
 
 function asError(message: string) {

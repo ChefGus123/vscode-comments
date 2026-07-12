@@ -37,6 +37,7 @@ export interface FileCommentData {
 }
 
 export interface ArchivedComment extends StoredComment {
+  filePath: string;
   archivedAt: string;
 }
 

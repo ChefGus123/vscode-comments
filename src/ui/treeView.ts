@@ -11,27 +11,37 @@ interface FileNode {
   fileStatus: 'ok' | 'file-not-found';
 }
 
-interface CommentNode {
+export interface CommentNode {
   kind: 'comment';
   comment: ToolCommentView;
 }
 
+const SHOW_RESOLVED_CONTEXT_KEY = 'agentComments.showResolved';
+
 export class AgentCommentsTreeProvider implements vscode.TreeDataProvider<Node> {
   private readonly onDidChangeTreeDataEmitter = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this.onDidChangeTreeDataEmitter.event;
+  private showResolved = false;
 
   constructor(private readonly store: CommentStore) {
     store.onDidChangeFile(() => this.refresh());
+    void vscode.commands.executeCommand('setContext', SHOW_RESOLVED_CONTEXT_KEY, false);
   }
 
   refresh(): void {
     this.onDidChangeTreeDataEmitter.fire();
   }
 
+  setShowResolved(value: boolean): void {
+    this.showResolved = value;
+    void vscode.commands.executeCommand('setContext', SHOW_RESOLVED_CONTEXT_KEY, value);
+    this.refresh();
+  }
+
   getTreeItem(element: Node): vscode.TreeItem {
     if (element.kind === 'file') {
       const item = new vscode.TreeItem(element.filePath, vscode.TreeItemCollapsibleState.Expanded);
-      item.description = `${element.unresolvedCount}`;
+      item.description = `${element.unresolvedCount} unresolved`;
       if (element.fileStatus === 'file-not-found') {
         item.iconPath = new vscode.ThemeIcon('warning');
         item.tooltip = 'File not found at this path — comments preserved, not auto-relocated.';
@@ -46,46 +56,62 @@ export class AgentCommentsTreeProvider implements vscode.TreeDataProvider<Node> 
     const { comment } = element;
     const item = new vscode.TreeItem(truncate(comment.text), vscode.TreeItemCollapsibleState.None);
     const lineLabel = comment.endLine ? `L${comment.line}-${comment.endLine}` : `L${comment.line}`;
-    item.description = `${lineLabel} · ${comment.author.type}`;
+    const descriptionParts = [lineLabel, comment.author.type];
+    if (comment.status === 'resolved') {
+      descriptionParts.push(`resolved by ${comment.resolvedBy?.type ?? 'unknown'}`);
+    }
+    item.description = descriptionParts.join(' · ');
     item.tooltip = new vscode.MarkdownString(
       `**${comment.author.type === 'user' ? 'You' : 'Agent'}** (${comment.anchorStatus})\n\n${comment.text}`
     );
-    item.iconPath = new vscode.ThemeIcon(
-      comment.anchorStatus === 'orphaned' ? 'warning' : comment.author.type === 'user' ? 'account' : 'hubot'
-    );
+    if (comment.status === 'resolved') {
+      item.iconPath = new vscode.ThemeIcon('check', new vscode.ThemeColor('charts.green'));
+    } else if (comment.anchorStatus === 'orphaned') {
+      item.iconPath = new vscode.ThemeIcon('warning');
+    } else {
+      item.iconPath = new vscode.ThemeIcon(comment.author.type === 'user' ? 'account' : 'hubot');
+    }
     if (comment.fileStatus === 'ok') {
       item.command = {
         command: 'agentComments.revealComment',
         title: 'Reveal Comment',
-        arguments: [comment.file, comment.line],
+        arguments: [comment.file, comment.line, comment.id],
       };
     }
-    item.contextValue = 'agentCommentsComment';
+    item.contextValue = comment.status === 'resolved' ? 'agentCommentsCommentResolved' : 'agentCommentsCommentUnresolved';
     return item;
   }
 
   async getChildren(element?: Node): Promise<Node[]> {
     if (!element) {
-      const index = this.store.getIndexSnapshot();
-      const files: FileNode[] = Array.from(index.entries())
-        .filter(([, entry]) => entry.unresolvedCount > 0)
-        .map(
-          ([filePath, entry]): FileNode => ({
-            kind: 'file',
-            filePath,
-            unresolvedCount: entry.unresolvedCount,
-            fileStatus: entry.fileStatus,
-          })
-        )
-        .sort((a, b) => a.filePath.localeCompare(b.filePath));
-      return files;
+      const fileMap = new Map<string, FileNode>();
+      for (const [filePath, entry] of this.store.getIndexSnapshot()) {
+        fileMap.set(filePath, {
+          kind: 'file',
+          filePath,
+          unresolvedCount: entry.unresolvedCount,
+          fileStatus: entry.fileStatus,
+        });
+      }
+
+      if (this.showResolved) {
+        const archived = await this.store.listArchivedFilePaths();
+        for (const filePath of archived.keys()) {
+          if (!fileMap.has(filePath)) {
+            const data = await this.store.loadFile(filePath);
+            fileMap.set(filePath, { kind: 'file', filePath, unresolvedCount: 0, fileStatus: data.fileStatus });
+          }
+        }
+      }
+
+      return Array.from(fileMap.values()).sort((a, b) => a.filePath.localeCompare(b.filePath));
     }
 
     if (element.kind === 'file') {
-      const comments = await this.store.listUnresolved(element.filePath);
-      return comments
-        .sort((a, b) => a.line - b.line)
-        .map((comment) => ({ kind: 'comment' as const, comment }));
+      const comments = this.showResolved
+        ? await this.store.getComments(element.filePath, true)
+        : await this.store.listUnresolved(element.filePath);
+      return comments.sort((a, b) => a.line - b.line).map((comment) => ({ kind: 'comment' as const, comment }));
     }
 
     return [];

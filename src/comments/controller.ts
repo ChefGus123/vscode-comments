@@ -34,6 +34,7 @@ export class AgentCommentsController implements vscode.Disposable {
   private readonly threadsByFile = new Map<string, Map<string, RenderedThread>>();
   private readonly debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly reanchoredOnOpen = new Set<string>();
+  private pendingDraftThread: vscode.CommentThread | undefined;
 
   constructor(private readonly store: CommentStore, private readonly extensionUri: vscode.Uri) {
     this.controller = vscode.comments.createCommentController('agentComments', 'Agent Comments');
@@ -275,7 +276,16 @@ export class AgentCommentsController implements vscode.Disposable {
     });
   }
 
-  async createComment(reply: vscode.CommentReply, authorType: AuthorType): Promise<void> {
+  async createComment(reply: vscode.CommentReply | undefined, authorType: AuthorType): Promise<void> {
+    if (!reply?.thread) {
+      vscode.window.showWarningMessage(
+        'Agent Comments: use the gutter "+" or select a range and choose "Add Comment" — this action only works from the comment input box.'
+      );
+      return;
+    }
+    if (reply.thread === this.pendingDraftThread) {
+      this.pendingDraftThread = undefined;
+    }
     if (!reply.text.trim()) {
       reply.thread.dispose();
       return;
@@ -288,33 +298,67 @@ export class AgentCommentsController implements vscode.Disposable {
     reply.thread.dispose();
   }
 
-  async resolveThread(thread: vscode.CommentThread, resolvedByType: AuthorType): Promise<void> {
-    const id = thread.comments[0]?.contextValue;
-    if (!id) {
+  /** Right-click "Add Comment": VS Code doesn't wire the gutter "+" flow into the context menu on
+   * its own, so we drive the same public API (an empty-comments thread) ourselves. */
+  addCommentAtSelection(): void {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || editor.document.uri.scheme !== 'file') {
+      vscode.window.showWarningMessage('Agent Comments: open a file to add a comment.');
+      return;
+    }
+    this.pendingDraftThread?.dispose();
+
+    const selection = editor.selection;
+    const range = new vscode.Range(selection.start.line, 0, selection.end.line, 0);
+    const thread = this.controller.createCommentThread(editor.document.uri, range, []);
+    thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
+    this.pendingDraftThread = thread;
+  }
+
+  async resolveThread(thread: vscode.CommentThread | undefined, resolvedByType: AuthorType): Promise<void> {
+    const id = thread?.comments[0]?.contextValue;
+    if (!thread || !id) {
+      vscode.window.showWarningMessage('Agent Comments: use the Resolve button on a comment thread.');
       return;
     }
     const filePath = toWorkspaceRelativePath(thread.uri);
     await this.store.resolveComment(filePath, id, { type: resolvedByType });
   }
 
-  async reopenThread(thread: vscode.CommentThread): Promise<void> {
-    const id = thread.comments[0]?.contextValue;
-    if (!id) {
+  async reopenThread(thread: vscode.CommentThread | undefined): Promise<void> {
+    const id = thread?.comments[0]?.contextValue;
+    if (!thread || !id) {
+      vscode.window.showWarningMessage('Agent Comments: use the Reopen button on a resolved comment thread.');
       return;
     }
     const filePath = toWorkspaceRelativePath(thread.uri);
     await this.store.reopenComment(filePath, id);
   }
 
-  async revealComment(filePath: string, line: number): Promise<void> {
+  async revealComment(filePath: string | undefined, line: number | undefined, commentId?: string): Promise<void> {
+    if (!filePath || !line) {
+      return;
+    }
     const target = resolveWorkspaceRelativePath(filePath);
     if (!target) {
+      vscode.window.showWarningMessage(`Agent Comments: could not resolve "${filePath}" in this workspace.`);
       return;
     }
     const document = await vscode.workspace.openTextDocument(target);
+    // Ensure threadsByFile is populated for this document before we look a thread up below —
+    // renderDocument is idempotent, so calling it again here (it may already have run via the
+    // onDidOpenTextDocument listener) is safe and closes the race between the two.
+    await this.renderDocument(document);
     const editor = await vscode.window.showTextDocument(document);
     const pos = new vscode.Position(Math.max(0, line - 1), 0);
     editor.selection = new vscode.Selection(pos, pos);
     editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
+
+    if (commentId) {
+      const rendered = this.threadsByFile.get(filePath)?.get(commentId);
+      if (rendered) {
+        rendered.thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
+      }
+    }
   }
 }
