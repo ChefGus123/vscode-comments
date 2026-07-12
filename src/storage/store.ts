@@ -65,7 +65,7 @@ async function appendJsonl(uri: vscode.Uri, record: unknown): Promise<void> {
   await vscode.workspace.fs.writeFile(uri, Buffer.from(existing + line, 'utf8'));
 }
 
-export type StoreChangeKind = 'add' | 'resolve' | 'reopen' | 'reanchor' | 'clear';
+export type StoreChangeKind = 'add' | 'resolve' | 'reopen' | 'reanchor' | 'clear' | 'delete';
 
 export interface StoreChangeEvent {
   filePath: string;
@@ -267,6 +267,43 @@ export class CommentStore {
       data.comments.push(reopened);
       await this.persist(data, 'reopen', reopened);
       return reopened;
+    });
+  }
+
+  /** Permanently removes a comment, whether it's still live (unresolved) or already archived (resolved). */
+  async deleteComment(filePath: string, id: string): Promise<StoredComment | undefined> {
+    return this.queueWrite(filePath, async () => {
+      const data = await this.loadFile(filePath);
+      const idx = data.comments.findIndex((c) => c.id === id);
+      if (idx !== -1) {
+        const [comment] = data.comments.splice(idx, 1);
+        await this.persist(data, 'delete', comment);
+        return comment;
+      }
+
+      const archiveUri = archiveFileUri(this.storageUri, filePath);
+      let archived: ArchivedComment[] = [];
+      try {
+        const bytes = await vscode.workspace.fs.readFile(archiveUri);
+        const text = Buffer.from(bytes).toString('utf8');
+        archived = text
+          .split('\n')
+          .filter((l) => l.trim().length > 0)
+          .map((l) => JSON.parse(l) as ArchivedComment);
+      } catch {
+        archived = [];
+      }
+      const archIdx = archived.findIndex((c) => c.id === id);
+      if (archIdx === -1) {
+        return undefined;
+      }
+      const [comment] = archived.splice(archIdx, 1);
+      await vscode.workspace.fs.writeFile(
+        archiveUri,
+        Buffer.from(archived.map((c) => JSON.stringify(c)).join('\n') + (archived.length ? '\n' : ''), 'utf8')
+      );
+      this.onDidChangeEmitter.fire({ filePath, kind: 'delete', comment });
+      return comment;
     });
   }
 

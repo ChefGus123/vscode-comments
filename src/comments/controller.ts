@@ -182,6 +182,16 @@ export class AgentCommentsController implements vscode.Disposable {
       return;
     }
 
+    if (event.kind === 'delete' && event.comment) {
+      const threads = this.threadsByFile.get(event.filePath);
+      const rendered = threads?.get(event.comment.id);
+      if (rendered) {
+        rendered.thread.dispose();
+        threads?.delete(event.comment.id);
+      }
+      return;
+    }
+
     if (event.kind === 'resolve' && event.comment) {
       const rendered = this.threadsByFile.get(event.filePath)?.get(event.comment.id);
       if (rendered) {
@@ -332,6 +342,16 @@ export class AgentCommentsController implements vscode.Disposable {
     }
     const filePath = toWorkspaceRelativePath(thread.uri);
     await this.store.reopenComment(filePath, id);
+  }
+
+  async deleteThread(thread: vscode.CommentThread | undefined): Promise<void> {
+    const id = thread?.comments[0]?.contextValue;
+    if (!thread || !id) {
+      vscode.window.showWarningMessage('Agentic Comments: use the Delete button on a comment thread.');
+      return;
+    }
+    const filePath = toWorkspaceRelativePath(thread.uri);
+    await this.store.deleteComment(filePath, id);
   }
 
   async revealComment(filePath: string | undefined, line: number | undefined, commentId?: string): Promise<void> {

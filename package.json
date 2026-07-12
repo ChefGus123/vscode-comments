@@ -46,6 +46,12 @@
         "icon": "$(discard)"
       },
       {
+        "command": "agentComments.deleteComment",
+        "title": "Delete",
+        "category": "Agentic Comments",
+        "icon": "$(trash)"
+      },
+      {
         "command": "agentComments.revealComment",
         "title": "Reveal Comment",
         "category": "Agentic Comments"
@@ -86,6 +92,12 @@
         "icon": "$(discard)"
       },
       {
+        "command": "agentComments.deleteCommentInTree",
+        "title": "Delete",
+        "category": "Agentic Comments",
+        "icon": "$(trash)"
+      },
+      {
         "command": "agentComments.addCommentAtSelection",
         "title": "Add Comment",
         "category": "Agentic Comments"
@@ -106,6 +118,10 @@
           "when": "false"
         },
         {
+          "command": "agentComments.deleteComment",
+          "when": "false"
+        },
+        {
           "command": "agentComments.revealComment",
           "when": "false"
         },
@@ -115,6 +131,10 @@
         },
         {
           "command": "agentComments.reopenCommentInTree",
+          "when": "false"
+        },
+        {
+          "command": "agentComments.deleteCommentInTree",
           "when": "false"
         }
       ],
@@ -142,6 +162,11 @@
           "command": "agentComments.reopenComment",
           "group": "inline",
           "when": "commentController == agentComments && commentThread == resolved"
+        },
+        {
+          "command": "agentComments.deleteComment",
+          "group": "inline",
+          "when": "commentController == agentComments && (commentThread == unresolved || commentThread == resolved)"
         }
       ],
       "view/title": [
@@ -170,6 +195,11 @@
         {
           "command": "agentComments.reopenCommentInTree",
           "when": "view == agentCommentsView && viewItem == agentCommentsCommentResolved",
+          "group": "inline"
+        },
+        {
+          "command": "agentComments.deleteCommentInTree",
+          "when": "view == agentCommentsView && (viewItem == agentCommentsCommentUnresolved || viewItem == agentCommentsCommentResolved)",
           "group": "inline"
         }
       ]

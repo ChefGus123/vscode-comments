@@ -74,6 +74,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       wrapCommand('reopenComment', (thread?: vscode.CommentThread) => controller.reopenThread(thread))
     ),
     vscode.commands.registerCommand(
+      'agentComments.deleteComment',
+      wrapCommand('deleteComment', (thread?: vscode.CommentThread) => controller.deleteThread(thread))
+    ),
+    vscode.commands.registerCommand(
       'agentComments.revealComment',
       wrapCommand('revealComment', (file?: string, line?: number, commentId?: string) =>
         controller.revealComment(file, line, commentId)
@@ -105,6 +109,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       'agentComments.reopenCommentInTree',
       wrapCommand('reopenCommentInTree', (node?: CommentNode) =>
         node ? store.reopenComment(node.comment.file, node.comment.id) : undefined
+      )
+    ),
+    vscode.commands.registerCommand(
+      'agentComments.deleteCommentInTree',
+      wrapCommand('deleteCommentInTree', (node?: CommentNode) =>
+        node ? store.deleteComment(node.comment.file, node.comment.id) : undefined
       )
     ),
     vscode.commands.registerCommand(

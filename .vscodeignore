@@ -8,3 +8,6 @@ node_modules/**
 esbuild.js
 tsconfig.json
 agent-comments-spec.md
+.claude/**
+PRD.md
+CLAUDE.md

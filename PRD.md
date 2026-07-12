@@ -191,11 +191,11 @@ Instead, a whole-file content hash (`contentHashAtLastCheck`, stored per file) i
 **Sidebar panel:** dedicated Activity Bar view, grouped by file.
 - Default: unresolved only, click-to-jump navigation (which also expands the thread if it was collapsed).
 - **Show Resolved / Hide Resolved** toggle in the panel toolbar — when on, also lists files whose *only* comments are archived (fully resolved), and shows resolved entries inline with a checkmark + "resolved by" tag.
-- Inline **Resolve**/**Reopen** action on hover, directly from the tree — no need to open the file first.
+- Inline **Resolve**/**Reopen**/**Delete** action on hover, directly from the tree — no need to open the file first.
 
 **Explorer decorations:** colored count badge on files with unresolved comments; a distinct badge for `file-not-found`.
 
-**Status actions:** binary Resolve/Reopen, exposed as comment-thread title-bar actions.
+**Status actions:** binary Resolve/Reopen, exposed as comment-thread title-bar actions. **Delete** is a separate, always-available title-bar action (not a status) — see §7.
 
 ---
 
@@ -205,6 +205,8 @@ Binary: `unresolved` | `resolved`.
 
 - `resolvedBy: { "type": "user" } | { "type": "agent" } | null` — set on resolve, cleared on reopen. Metadata riding alongside the binary status for the UI tag — not a third state.
 - **No permission gating inside the tool.** Whether an agent *can* resolve/create comments is controlled entirely by whether the corresponding tool is enabled in VS Code's own MCP tool picker.
+
+**Delete** is orthogonal to status, not a third value of it: it permanently removes a comment (live or archived) from disk, whereas resolve/reopen just move a comment between the live JSON and the archive `.jsonl` and are fully reversible. UI-only for now (comment-thread title bar + sidebar) — deliberately **not** exposed as an MCP tool, so agents can mark work done (`resolve_comments`) but can't erase review history; that stays a human-only action until there's a concrete reason for agents to need it. Shipped **without a confirmation prompt** — same posture as everything else in this extension that doesn't gate on permission, revisit if it turns out to cause accidental data loss in practice.
 
 ---
 
@@ -287,12 +289,13 @@ The local HTTP server binds to `127.0.0.1` on an ephemeral port with no query-st
 |---|---|
 | Add Comment | Gutter "+" on hover, or right-click a line/selection |
 | Resolve / Reopen | Comment thread title bar; also inline in the sidebar |
+| Delete | Comment thread title bar; also inline in the sidebar — permanent, no confirmation prompt, works on both unresolved and resolved comments, UI-only (no MCP tool) |
 | Reveal Comment | Click a comment in the sidebar — jumps to it and expands the thread if collapsed |
 | Show Resolved / Hide Resolved | Toolbar icon in the sidebar panel |
 | Refresh | Toolbar icon in the sidebar panel |
 | Clear All Comment Data for This Workspace | Command Palette — deletes all stored data for the workspace; irreversible |
 
-Commands that require a UI-supplied context object (`addComment`, `resolveComment`, `reopenComment`, `revealComment`, `resolveCommentInTree`, `reopenCommentInTree`) are hidden from the Command Palette (`when: false`) — invoked without their context argument, they'd fail; this was a real shipped bug (every one of them threw "cannot read properties of undefined" when reachable from the palette) before being excluded.
+Commands that require a UI-supplied context object (`addComment`, `resolveComment`, `reopenComment`, `deleteComment`, `revealComment`, `resolveCommentInTree`, `reopenCommentInTree`, `deleteCommentInTree`) are hidden from the Command Palette (`when: false`) — invoked without their context argument, they'd fail; this was a real shipped bug (every one of them threw "cannot read properties of undefined" when reachable from the palette) before being excluded.
 
 ---
 
