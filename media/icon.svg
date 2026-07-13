@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2B2F55"/>
+      <stop offset="1" stop-color="#14162A"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="0" y="0" width="256" height="256" rx="54" fill="url(#bg)"/>
+
+  <!-- agent comment bubble (back) -->
+  <rect x="30" y="40" width="130" height="96" rx="24" fill="#f14c4c"/>
+  <path d="M50,136 L34,164 L90,136 Z" fill="#f14c4c"/>
+
+  <!-- cutout so the user bubble reads as clearly in front -->
+  <rect x="88" y="88" width="146" height="112" rx="30" fill="#14162A"/>
+
+  <!-- user comment bubble (front) -->
+  <rect x="96" y="96" width="130" height="96" rx="24" fill="#3794ff"/>
+  <path d="M166,192 L222,220 L206,192 Z" fill="#3794ff"/>
+</svg>
