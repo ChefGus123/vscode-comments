@@ -139,7 +139,8 @@ export class AgentCommentsMcpServer implements vscode.Disposable {
         title: 'List unresolved comments',
         description:
           'Lists unresolved review comments, grouped by file. Omit "file" to list across the whole workspace. ' +
-          '"locationUncertain: true" means the code nearby changed and the line number may be off.',
+          '"locationUncertain: true" means the code nearby changed and the line number may be off.'+ 
+          'Use when the user/agent asks you to see comments they left you',
         inputSchema: {
           file: z.string().optional().describe('Workspace-relative file path. Omit for the whole workspace.'),
         },
@@ -172,7 +173,8 @@ export class AgentCommentsMcpServer implements vscode.Disposable {
         title: 'Get comments for files (bulk)',
         description:
           'Gets all comments for one or more files, grouped by file, optionally including resolved ones. ' +
-          'A "status": "resolved" entry means resolved; "resolvedBy" comes with it.',
+          'A "status": "resolved" entry means resolved; "resolvedBy" comes with it.' + 
+          'Use when the user/agent asks you to see comments they left you at a specific file',
         inputSchema: {
           files: z.array(z.string()).min(1).describe('Workspace-relative file paths.'),
           includeResolved: z.boolean().optional().default(false),
@@ -253,7 +255,7 @@ export class AgentCommentsMcpServer implements vscode.Disposable {
       {
         title: 'Resolve comments (bulk)',
         description:
-          'Resolves one or more comments, grouped by file, in one call. Always stamped as resolved by author type "agent".',
+          'Resolves one or more comments, grouped by file, in one call. Always stamped as resolved by author type "agent". Use when asked to resolve comments left by the user/agent.',
         inputSchema: {
           files: z.record(z.array(z.string())).describe('Map of workspace-relative file path to the comment ids to resolve there.'),
         },

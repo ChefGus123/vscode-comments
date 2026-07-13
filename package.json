@@ -2,9 +2,13 @@
   "name": "agentic-comments",
   "displayName": "Agentic Comments",
   "description": "Leave GitHub-style inline review comments on live code and expose them to AI coding agents via MCP.",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "publisher": "IlayAmir",
   "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#14162A",
+    "theme": "dark"
+  },
   "homepage": "https://github.com/ChefGus123/vscode-comments#readme",
   "bugs": {
     "url": "https://github.com/ChefGus123/vscode-comments/issues"
