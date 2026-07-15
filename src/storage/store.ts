@@ -65,7 +65,7 @@ async function appendJsonl(uri: vscode.Uri, record: unknown): Promise<void> {
   await vscode.workspace.fs.writeFile(uri, Buffer.from(existing + line, 'utf8'));
 }
 
-export type StoreChangeKind = 'add' | 'resolve' | 'reopen' | 'reanchor' | 'clear' | 'delete';
+export type StoreChangeKind = 'add' | 'resolve' | 'reopen' | 'reanchor' | 'clear' | 'delete' | 'edit';
 
 export interface StoreChangeEvent {
   filePath: string;
@@ -233,6 +233,23 @@ export class CommentStore {
         archivedAt: comment.updatedAt,
       } as ArchivedComment);
       await this.persist(data, 'resolve', comment);
+      return comment;
+    });
+  }
+
+  /** Edits a live (unresolved) comment's text in place. Not applicable to resolved/archived
+   * comments — edit is a gutter-only, unresolved-only affordance (never MCP-exposed). */
+  async updateCommentText(filePath: string, id: string, text: string): Promise<StoredComment | undefined> {
+    return this.queueWrite(filePath, async () => {
+      const data = await this.loadFile(filePath);
+      const idx = data.comments.findIndex((c) => c.id === id);
+      if (idx === -1) {
+        return undefined;
+      }
+      const comment = data.comments[idx];
+      comment.text = text;
+      comment.updatedAt = new Date().toISOString();
+      await this.persist(data, 'edit', comment);
       return comment;
     });
   }

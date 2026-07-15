@@ -83,7 +83,7 @@ export class Selection extends Range {
 // ---------- Enums (plain objects; only member access is exercised at runtime) ----------
 
 export const FileType = { Unknown: 0, File: 1, Directory: 2, SymbolicLink: 64 } as const;
-export const CommentMode = { Editable: 0, Preview: 1 } as const;
+export const CommentMode = { Editing: 0, Preview: 1 } as const;
 export const CommentThreadCollapsibleState = { Collapsed: 0, Expanded: 1 } as const;
 export const TextEditorRevealType = { Default: 0, InCenter: 1, InCenterIfOutsideViewport: 2, AtTop: 3 } as const;
 export const TreeItemCollapsibleState = { None: 0, Collapsed: 1, Expanded: 2 } as const;

@@ -56,6 +56,22 @@
         "icon": "$(trash)"
       },
       {
+        "command": "agentComments.editComment",
+        "title": "Edit",
+        "category": "Agentic Comments",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "agentComments.saveComment",
+        "title": "Save",
+        "category": "Agentic Comments"
+      },
+      {
+        "command": "agentComments.cancelEditComment",
+        "title": "Cancel",
+        "category": "Agentic Comments"
+      },
+      {
         "command": "agentComments.revealComment",
         "title": "Reveal Comment",
         "category": "Agentic Comments"
@@ -126,6 +142,18 @@
           "when": "false"
         },
         {
+          "command": "agentComments.editComment",
+          "when": "false"
+        },
+        {
+          "command": "agentComments.saveComment",
+          "when": "false"
+        },
+        {
+          "command": "agentComments.cancelEditComment",
+          "when": "false"
+        },
+        {
           "command": "agentComments.revealComment",
           "when": "false"
         },
@@ -171,6 +199,25 @@
           "command": "agentComments.deleteComment",
           "group": "inline",
           "when": "commentController == agentComments && (commentThread == unresolved || commentThread == resolved)"
+        }
+      ],
+      "comments/comment/title": [
+        {
+          "command": "agentComments.editComment",
+          "group": "inline",
+          "when": "commentController == agentComments && comment == editable"
+        }
+      ],
+      "comments/comment/context": [
+        {
+          "command": "agentComments.saveComment",
+          "group": "inline@1",
+          "when": "commentController == agentComments"
+        },
+        {
+          "command": "agentComments.cancelEditComment",
+          "group": "inline@2",
+          "when": "commentController == agentComments"
         }
       ],
       "view/title": [
@@ -234,12 +281,12 @@
     "configuration": {
       "title": "Agentic Comments",
       "properties": {
-        "agentComments.mcp.alwaysIncludeSnippet": {
+        "agenticComments.mcp.alwaysIncludeSnippet": {
           "type": "boolean",
           "default": true,
           "markdownDescription": "Experimental. Include the original commented-on code snippet (`originalContent`) on every MCP comment response, not just ones with an uncertain anchor location — saves an agent a round trip to read the file. Turn off to only include it when `locationUncertain` is true."
         },
-        "agentComments.mcp.snippetMaxChars": {
+        "agenticComments.mcp.snippetMaxChars": {
           "type": "number",
           "default": 500,
           "minimum": 0,
