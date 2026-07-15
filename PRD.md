@@ -134,10 +134,10 @@ This was a real, shipped bug (an agent's comment on `src/foo.ts` was invisible i
 **Problem:** code under a comment changes constantly. Anchors must degrade gracefully rather than silently pointing at the wrong code or vanishing.
 
 **Approach:** content-hash + surrounding context, three-state confidence.
-- Each comment stores `lineHint`/`endLineHint` (a hint only), a hash of the commented line(s) content (CRLF/LF normalized before hashing), and one line of raw context immediately before/after.
+- Each comment stores `lineHint`/`endLineHint` (a hint only), a hash of the commented line(s) content (CRLF/LF normalized before hashing), one line of raw context immediately before/after, and the raw original commented-on text itself (`originalContent`) — so once an anchor degrades there's still something human-readable to compare against, not just an opaque hash. `originalContent` is optional on the type: anchors persisted before this field existed simply don't have one, treated as "no snippet available" rather than migrated (§4.5).
 - **`exact`** — content hash still matches at (or near) the hinted location.
 - **`approximate`** — the exact content changed, but surrounding context still matches nearby. Anchor relocated, confidence downgraded.
-- **`orphaned`** — neither content nor context found. Anchor is not deleted; the comment remains visible with its original text/context preserved, flagged as orphaned.
+- **`orphaned`** — neither content nor context found. Anchor is not deleted; the comment remains visible with its original text/context/snippet preserved, flagged as orphaned. Permanently frozen from this point on — see §4.4.
 - **Comments are never hidden due to anchor status.** All three states are returned by every read-facing MCP tool and rendered in the UI (dimmed icon for approximate, warning glyph for orphaned) — an agent or developer can always see the confidence level and decide whether to trust the line number.
 
 Two anchor-construction paths exist: `createAnchor` (from a live `vscode.TextDocument`, used by the UI) and `createAnchorFromContent` (from a raw string, used by MCP's `add_comments` — which prefers a live open/dirty editor buffer over disk content when one exists, so a comment anchors against what's actually on screen rather than the last-saved version).
@@ -161,6 +161,20 @@ Only comments whose lines actually overlap a change fall through to the expensiv
 The first time a file is opened in a session, its comments are re-validated against current content in case the file was edited out-of-band while closed (e.g. an agent's terminal command) — `onDidChangeTextDocument` can't have told us since no editor was watching. Naively, this means re-running the (potentially expensive) per-comment `reanchor()` scan for every comment in the file, every time it's opened, regardless of whether anything actually changed.
 
 Instead, a whole-file content hash (`contentHashAtLastCheck`, stored per file) is compared first. If it matches what was recorded the last time this file was checked, the entire per-comment reanchor pass is skipped — the common case (reopening a file that hasn't changed) becomes one O(file-size) hash comparison instead of O(comments × window-scan).
+
+### 4.4 Orphan Freeze
+
+Early versions kept re-running the full `reanchor()` cascade (hint → window scan → full-document scan → context match) against an already-`orphaned` anchor on every subsequent edit, exactly as for any other status. The context-match step only has one line of before/after context to go on and scans from the top of the file downward, taking the first match — with common patterns (blank lines, a lone `}`, a repeated import) this occasionally produced a spurious match near the top of the file. An orphaned comment could flicker into a wrong `approximate` position there, and if it later failed to match again, *that* wrong position became the new "frozen" baseline — compounding toward line 1 over an edit history. Users reported this as comments "jumping to the start of the page" and becoming impossible to place.
+
+**Fix:** `reanchor()` now short-circuits at the top — once `status === 'orphaned'`, it returns the anchor unchanged, permanently. The line-shifting fast path (`shiftAnchorForChanges`, §4.2) still applies to orphaned anchors, since it's deterministic drift-tracking for edits elsewhere in the file, not a re-guess of *what* the anchor points at; only an edit that directly overlaps the orphaned anchor's own lines falls through to `reanchor()`, which now just no-ops. The rendered `vscode.Range` in `syncThreads` is also defensively clamped to `[0, document.lineCount - 1]`, so a frozen line number that ends up beyond a since-shrunk file's length can never itself trigger unpredictable placement.
+
+### 4.5 Snippet Truncation & Settings
+
+`originalContent` (§4) can be arbitrarily large (a big selection), so both surfaces that render it cap its length:
+- **UI** (comment thread body, sidebar tooltip): a fixed constant, `UI_SNIPPET_MAX_CHARS` (800) in `src/anchoring/snippet.ts`. No interactive expand affordance yet — VS Code's Comment/TreeItem markdown has no clean collapsible widget — so a hard cap plus a truncation marker is the whole story for v1 (see §12).
+- **MCP**: user-configurable via `agentComments.mcp.snippetMaxChars` (default 500 chars; 0 omits the snippet entirely).
+
+On the MCP surface, the snippet is useful for more than orphan recovery — an agent that always gets the original code text can skip a round-trip file read. `agentComments.mcp.alwaysIncludeSnippet` (default `true`, marked experimental) includes `originalContent` on every comment, not just ones with `locationUncertain: true`; turning it off falls back to the original degraded-only behavior. Both settings are read fresh per tool call (`vscode.workspace.getConfiguration`), so changes apply without an extension reload.
 
 ---
 
@@ -331,6 +345,8 @@ Still open / accepted:
 | Concurrency | Single in-process writer, per-file write queue |
 | Comment model | Single message per anchor, no reply threads |
 | Anchoring | Content hash + context lines; `exact`/`approximate`/`orphaned`, never hidden; batch-aware shifting; whole-file-hash short-circuit on first open |
+| Anchor recall | Original snippet text (`originalContent`) persisted on the anchor and shown wherever anchor status is degraded; truncated per-surface (fixed cap in UI, configurable cap + always-on toggle in MCP) |
+| Orphan freeze | Once `orphaned`, `reanchor()` never re-searches — permanently frozen at its last position instead of drifting on later edits |
 | File displacement | No auto-rename-tracking; `fileStatus: "file-not-found"` flag instead |
 | Author model | Binary `user`/`agent`, no per-agent/session identity |
 | Status model | Binary `resolved`/`unresolved`, with a non-blocking `resolvedBy` tag |
@@ -350,6 +366,7 @@ Still open / accepted:
 - Richer agent identity (which specific agent/session authored a comment) — explicitly out of scope.
 - Cross-machine or cross-clone comment sharing — not addressed, by design.
 - Manual "reconnect" UX for `file-not-found` comments — not designed in detail; the flag is surfaced, reconnection is currently a manual discard-and-recreate.
+- Interactive expand-to-full-snippet UI — deferred; the current UI truncates `originalContent` at a fixed cap with a truncation marker, no expand affordance.
 
 ---
 
@@ -368,3 +385,4 @@ Chronological, most recent last. Add an entry whenever a decision in this doc ch
 - **Resolved comments stay visible in-editor for the session** despite moving to the archive on disk — reconciles the storage model with the desired UX.
 - **Rebranded "Agent Comments" → "Agentic Comments"** across display strings; internal command/controller ids (`agentComments.*`) kept stable.
 - **Added a Jest unit test suite** at 100% statement/branch coverage across `src/`. `ts-jest` was tried first and rejected — it crashes against the project's TypeScript ^7 beta (`ConfigSet._resolveTsConfig` throws); switched to `babel-jest` + `@babel/preset-typescript`, which only transpiles (no type-checking, already covered by `npm run typecheck`) and has no TS-version coupling. `vscode` has no real module to require outside the extension host, so `test/__mocks__/vscode.ts` hand-implements the slice of the API `src/` actually uses (in-memory `workspace.fs`, functioning `Uri`/`Range`/`EventEmitter`/`TreeItem`, etc.) rather than pulling in a third-party mock package. `mcp/server.ts` is tested by starting the real HTTP server and driving it with a real `@modelcontextprotocol/sdk` client — the wire protocol and auth-header check are the actual thing worth verifying there. A handful of genuinely defensive branches unreachable through any public code path (e.g. a cache-eviction guard, a zod-defaulted argument) are exercised by direct white-box calls into private members rather than left uncovered.
+- **0.3.0 — fixed orphaned-comment recall.** Users reported that once enough lines changed, an orphaned comment became impossible to place — no way to see what code it used to be about, and it sometimes appeared to "jump to the start of the page." Root cause: `reanchor()` kept re-running its full search cascade against already-`orphaned` anchors on every later edit, and the single-line context-match step (scanning from line 0) could spuriously relocate one to a wrong position near the top, which then became the new "frozen" baseline next time it re-orphaned — compounding drift toward line 1 over an edit history. Fixed by short-circuiting `reanchor()` once `status === 'orphaned'` (§4.4) and by persisting the original commented-on text (`originalContent`) on the anchor so degraded comments always show what they were about, in the editor, sidebar, and MCP responses (§4.5). Added a defensive clamp on the rendered `vscode.Range` so a frozen line number beyond a shrunk file's length can't itself cause unpredictable placement. Also added two new settings, `agentComments.mcp.alwaysIncludeSnippet` (default on, experimental — includes the snippet on every MCP comment, not just degraded ones, saving agents a round-trip file read) and `agentComments.mcp.snippetMaxChars` (default 500) — the extension's first-ever contributed settings.

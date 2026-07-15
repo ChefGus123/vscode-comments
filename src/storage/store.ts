@@ -433,6 +433,7 @@ function toView(filePath: string, fileStatus: FileCommentData['fileStatus'], c: 
     line: c.anchor.lineHint,
     endLine: c.anchor.endLineHint !== c.anchor.lineHint ? c.anchor.endLineHint : undefined,
     anchorStatus: c.anchor.status,
+    originalContent: c.anchor.originalContent,
     author: c.author,
     text: c.text,
     createdAt: c.createdAt,

@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { CommentStore, StoreChangeEvent } from '../storage/store';
 import { resolveWorkspaceRelativePath, toWorkspaceRelativePath } from '../storage/paths';
 import { createAnchor, reanchor, shiftAnchorForChanges } from '../anchoring/anchor';
+import { truncateSnippet, UI_SNIPPET_MAX_CHARS } from '../anchoring/snippet';
 import { AnchorStatus, AuthorType, StoredComment } from '../types';
 
 const DEBOUNCE_MS = 400;
@@ -126,7 +127,10 @@ export class AgentCommentsController implements vscode.Disposable {
     for (const comment of comments) {
       seen.add(comment.id);
       const rendered = existing.get(comment.id);
-      const range = new vscode.Range(comment.anchor.lineHint - 1, 0, comment.anchor.endLineHint - 1, 0);
+      const maxLine = Math.max(0, document.lineCount - 1);
+      const rangeStart = Math.min(Math.max(0, comment.anchor.lineHint - 1), maxLine);
+      const rangeEnd = Math.min(Math.max(rangeStart, comment.anchor.endLineHint - 1), maxLine);
+      const range = new vscode.Range(rangeStart, 0, rangeEnd, 0);
       if (rendered) {
         rendered.thread.range = range;
         rendered.status = comment.status;
@@ -158,9 +162,19 @@ export class AgentCommentsController implements vscode.Disposable {
     thread.comments = [this.toVscodeComment(comment)];
   }
 
+  private commentBody(comment: StoredComment): vscode.MarkdownString {
+    const { anchor } = comment;
+    let value = comment.text;
+    if (anchor.status !== 'exact' && anchor.originalContent) {
+      const snippet = truncateSnippet(anchor.originalContent, UI_SNIPPET_MAX_CHARS);
+      value += `\n\n---\n*Originally:*\n\`\`\`\n${snippet}\n\`\`\``;
+    }
+    return new vscode.MarkdownString(value);
+  }
+
   private toVscodeComment(comment: StoredComment): vscode.Comment {
     return {
-      body: new vscode.MarkdownString(comment.text),
+      body: this.commentBody(comment),
       mode: vscode.CommentMode.Preview,
       author: {
         name: comment.author.type === 'user' ? 'You' : 'Agent',

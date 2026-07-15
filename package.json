@@ -2,7 +2,7 @@
   "name": "agentic-comments",
   "displayName": "Agentic Comments",
   "description": "Leave GitHub-style inline review comments on live code and expose them to AI coding agents via MCP.",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "publisher": "IlayAmir",
   "icon": "media/icon.png",
   "galleryBanner": {
@@ -230,7 +230,23 @@
         "id": "agentComments.mcpProvider",
         "label": "Agentic Comments"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Agentic Comments",
+      "properties": {
+        "agentComments.mcp.alwaysIncludeSnippet": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Experimental. Include the original commented-on code snippet (`originalContent`) on every MCP comment response, not just ones with an uncertain anchor location — saves an agent a round trip to read the file. Turn off to only include it when `locationUncertain` is true."
+        },
+        "agentComments.mcp.snippetMaxChars": {
+          "type": "number",
+          "default": 500,
+          "minimum": 0,
+          "description": "Maximum characters of the original-code snippet included in MCP comment responses before truncation. Set to 0 to omit the snippet entirely."
+        }
+      }
+    }
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p ./",

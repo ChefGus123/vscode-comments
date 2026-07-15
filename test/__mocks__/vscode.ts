@@ -275,9 +275,27 @@ export const _emitters = {
   didChangeVisibleTextEditors: new EventEmitter<MockTextEditor[]>(),
 };
 
+// ---------- configuration ----------
+
+const configStore = new Map<string, unknown>();
+
+/** Test-only helper: `key` is the fully-qualified setting id, e.g. "agentComments.mcp.snippetMaxChars". */
+export function __setConfig(key: string, value: unknown): void {
+  configStore.set(key, value);
+}
+
 // ---------- workspace ----------
 
 export const workspace = {
+  getConfiguration(section?: string) {
+    return {
+      get<T>(key: string, defaultValue?: T): T {
+        const fullKey = section ? `${section}.${key}` : key;
+        return configStore.has(fullKey) ? (configStore.get(fullKey) as T) : (defaultValue as T);
+      },
+    };
+  },
+
   workspaceFolders: undefined as Array<{ uri: Uri; name: string; index: number }> | undefined,
   textDocuments: [] as MockTextDocument[],
 
@@ -393,6 +411,7 @@ export const lm = {
 
 export function __reset(): void {
   fsStore.clear();
+  configStore.clear();
   workspace.workspaceFolders = undefined;
   workspace.textDocuments = [];
   window.activeTextEditor = undefined;

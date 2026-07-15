@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { CommentStore } from '../storage/store';
+import { truncateSnippet, UI_SNIPPET_MAX_CHARS } from '../anchoring/snippet';
 import { ToolCommentView } from '../types';
 
 type Node = FileNode | CommentNode;
@@ -61,9 +62,12 @@ export class AgentCommentsTreeProvider implements vscode.TreeDataProvider<Node> 
       descriptionParts.push(`resolved by ${comment.resolvedBy?.type ?? 'unknown'}`);
     }
     item.description = descriptionParts.join(' · ');
-    item.tooltip = new vscode.MarkdownString(
-      `**${comment.author.type === 'user' ? 'You' : 'Agent'}** (${comment.anchorStatus})\n\n${comment.text}`
-    );
+    let tooltipValue = `**${comment.author.type === 'user' ? 'You' : 'Agent'}** (${comment.anchorStatus})\n\n${comment.text}`;
+    if (comment.anchorStatus !== 'exact' && comment.originalContent) {
+      const snippet = truncateSnippet(comment.originalContent, UI_SNIPPET_MAX_CHARS);
+      tooltipValue += `\n\n---\n*Originally:*\n\`\`\`\n${snippet}\n\`\`\``;
+    }
+    item.tooltip = new vscode.MarkdownString(tooltipValue);
     if (comment.status === 'resolved') {
       item.iconPath = new vscode.ThemeIcon('check', new vscode.ThemeColor('charts.green'));
     } else if (comment.anchorStatus === 'orphaned') {

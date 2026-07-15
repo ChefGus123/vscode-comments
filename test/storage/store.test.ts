@@ -442,6 +442,26 @@ describe('getComments', () => {
     const views = await store.getComments('a.ts', false);
     expect(views).toHaveLength(0);
   });
+
+  it('round-trips the anchor originalContent onto the tool view', async () => {
+    const store = new CommentStore(storageUri);
+    await store.initialize();
+    await markSourceFileExists('a.ts');
+    await store.addComment('a.ts', makeAnchor({ originalContent: 'const x = 1;' }), 'note', author);
+
+    const views = await store.getComments('a.ts', false);
+    expect(views[0].originalContent).toBe('const x = 1;');
+  });
+
+  it('leaves originalContent undefined for a legacy anchor that never had it', async () => {
+    const store = new CommentStore(storageUri);
+    await store.initialize();
+    await markSourceFileExists('a.ts');
+    await store.addComment('a.ts', makeAnchor(), 'note', author);
+
+    const views = await store.getComments('a.ts', false);
+    expect(views[0].originalContent).toBeUndefined();
+  });
 });
 
 describe('listArchivedFilePaths', () => {

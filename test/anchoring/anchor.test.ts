@@ -21,6 +21,7 @@ describe('createAnchor', () => {
       contentHash: hashContent('target1\ntarget2'),
       contextBefore: 'before',
       contextAfter: 'after',
+      originalContent: 'target1\ntarget2',
       status: 'exact',
     });
   });
@@ -47,12 +48,14 @@ describe('createAnchorFromContent', () => {
     expect(anchor.contentHash).toBe(hashContent('target'));
     expect(anchor.contextBefore).toBe('before');
     expect(anchor.contextAfter).toBe('after');
+    expect(anchor.originalContent).toBe('target');
   });
 
   it('falls back to empty context when the range covers the entire (single-line) content', () => {
     const anchor = createAnchorFromContent('onlyline', 0, 0);
     expect(anchor.contextBefore).toBe('');
     expect(anchor.contextAfter).toBe('');
+    expect(anchor.originalContent).toBe('onlyline');
   });
 });
 
@@ -192,5 +195,14 @@ describe('reanchor', () => {
     const edited = ['before', 'CHANGED1', 'CHANGED2', 'after'];
     const result = reanchor(doc(edited) as any, anchor);
     expect(result.status).toBe('orphaned');
+  });
+
+  it('returns an already-orphaned anchor unchanged without re-searching', () => {
+    const original = ['before', 'target1', 'target2', 'after'];
+    const orphaned: Anchor = { ...anchorFor(original, 1, 2), lineHint: 99, endLineHint: 100, status: 'orphaned' };
+    // The original content is back verbatim (and at its original line) — the cascade would find an
+    // exact match here if it ran, but the freeze must short-circuit before ever trying.
+    const result = reanchor(doc(original) as any, orphaned);
+    expect(result).toEqual(orphaned);
   });
 });

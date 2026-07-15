@@ -9,7 +9,7 @@ import { hashContent } from '../../src/anchoring/hash';
 import { createTextDocument } from '../__mocks__/vscode';
 import { archiveFileUri } from '../../src/storage/paths';
 
-const mockVscode = vscode as unknown as { __reset(): void };
+const mockVscode = vscode as unknown as { __reset(): void; __setConfig(key: string, value: unknown): void };
 const storageUri = vscode.Uri.file('/storage');
 const repoUri = vscode.Uri.file('/repo');
 
@@ -121,6 +121,87 @@ describe('list_unresolved_comments', () => {
     const payload = textOf(result);
     expect(payload.files['a.ts'].comments[0].locationUncertain).toBe(true);
     expect(payload.files['a.ts'].comments[0].endLine).toBe(6);
+  });
+
+  it('includes originalContent on every comment by default, exact anchors included', async () => {
+    const { store, server, port } = await setupServer();
+    activeServer = server;
+    await writeSourceFile('a.ts', 'one\ntwo\nthree');
+    await store.addComment(
+      'a.ts',
+      { lineHint: 2, endLineHint: 2, contentHash: 'h', contextBefore: 'one', contextAfter: 'three', originalContent: 'two', status: 'exact' },
+      'hello',
+      { type: 'user' }
+    );
+
+    const client = await connectClient(server, port);
+    const result = await client.callTool({ name: 'list_unresolved_comments', arguments: { file: 'a.ts' } });
+    const payload = textOf(result);
+    expect(payload.files['a.ts'].comments[0].locationUncertain).toBeUndefined();
+    expect(payload.files['a.ts'].comments[0].originalContent).toBe('two');
+  });
+
+  it('omits originalContent on exact anchors when alwaysIncludeSnippet is disabled', async () => {
+    mockVscode.__setConfig('agentComments.mcp.alwaysIncludeSnippet', false);
+    const { store, server, port } = await setupServer();
+    activeServer = server;
+    await writeSourceFile('a.ts', 'one\ntwo\nthree');
+    await store.addComment(
+      'a.ts',
+      { lineHint: 2, endLineHint: 2, contentHash: 'h', contextBefore: 'one', contextAfter: 'three', originalContent: 'two', status: 'exact' },
+      'exact-one',
+      { type: 'user' }
+    );
+    await store.addComment(
+      'a.ts',
+      { lineHint: 5, endLineHint: 5, contentHash: 'no-match', contextBefore: 'zz', contextAfter: 'zz', originalContent: 'gone', status: 'approximate' },
+      'uncertain-one',
+      { type: 'user' }
+    );
+
+    const client = await connectClient(server, port);
+    const result = await client.callTool({ name: 'list_unresolved_comments', arguments: { file: 'a.ts' } });
+    const payload = textOf(result);
+    const exactEntry = payload.files['a.ts'].comments.find((c: any) => c.text === 'exact-one');
+    const uncertainEntry = payload.files['a.ts'].comments.find((c: any) => c.text === 'uncertain-one');
+    expect('originalContent' in exactEntry).toBe(false);
+    expect(uncertainEntry.originalContent).toBe('gone');
+  });
+
+  it('truncates originalContent to the configured snippetMaxChars', async () => {
+    mockVscode.__setConfig('agentComments.mcp.snippetMaxChars', 4);
+    const { store, server, port } = await setupServer();
+    activeServer = server;
+    await writeSourceFile('a.ts', 'one\ntwo\nthree');
+    await store.addComment(
+      'a.ts',
+      { lineHint: 2, endLineHint: 2, contentHash: 'h', contextBefore: 'one', contextAfter: 'three', originalContent: 'abcdefgh', status: 'exact' },
+      'hello',
+      { type: 'user' }
+    );
+
+    const client = await connectClient(server, port);
+    const result = await client.callTool({ name: 'list_unresolved_comments', arguments: { file: 'a.ts' } });
+    const payload = textOf(result);
+    expect(payload.files['a.ts'].comments[0].originalContent).toMatch(/^abcd\n… \(truncated, 4 more chars\)$/);
+  });
+
+  it('omits originalContent entirely when snippetMaxChars is 0', async () => {
+    mockVscode.__setConfig('agentComments.mcp.snippetMaxChars', 0);
+    const { store, server, port } = await setupServer();
+    activeServer = server;
+    await writeSourceFile('a.ts', 'one\ntwo\nthree');
+    await store.addComment(
+      'a.ts',
+      { lineHint: 2, endLineHint: 2, contentHash: 'h', contextBefore: 'one', contextAfter: 'three', originalContent: 'two', status: 'exact' },
+      'hello',
+      { type: 'user' }
+    );
+
+    const client = await connectClient(server, port);
+    const result = await client.callTool({ name: 'list_unresolved_comments', arguments: { file: 'a.ts' } });
+    const payload = textOf(result);
+    expect('originalContent' in payload.files['a.ts'].comments[0]).toBe(false);
   });
 
   it('surfaces fileStatus for a file whose comments exist but whose source file is missing', async () => {

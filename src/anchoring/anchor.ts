@@ -21,12 +21,14 @@ function rangeContent(document: vscode.TextDocument, start0: number, end0: numbe
 
 /** Builds a fresh anchor for a newly-created comment on [startLine0, endLine0] (0-indexed, inclusive). */
 export function createAnchor(document: vscode.TextDocument, startLine0: number, endLine0: number): Anchor {
+  const content = normalizeLineEndings(rangeContent(document, startLine0, endLine0));
   return {
     lineHint: startLine0 + 1,
     endLineHint: endLine0 + 1,
-    contentHash: hashContent(rangeContent(document, startLine0, endLine0)),
+    contentHash: hashContent(content),
     contextBefore: normalizeLineEndings(lineText(document, startLine0 - 1)),
     contextAfter: normalizeLineEndings(lineText(document, endLine0 + 1)),
+    originalContent: content,
     status: 'exact',
   };
 }
@@ -42,12 +44,14 @@ export function createAnchorFromContent(content: string, startLine0: number, end
   for (let i = startLine0; i <= endLine0; i++) {
     rangeLines.push(at(i));
   }
+  const rangeContentStr = rangeLines.join('\n');
   return {
     lineHint: startLine0 + 1,
     endLineHint: endLine0 + 1,
-    contentHash: hashContent(rangeLines.join('\n')),
+    contentHash: hashContent(rangeContentStr),
     contextBefore: at(startLine0 - 1),
     contextAfter: at(endLine0 + 1),
+    originalContent: rangeContentStr,
     status: 'exact',
   };
 }
@@ -102,8 +106,20 @@ export function shiftAnchorForChanges(
  * Recomputes an anchor's location/status against the current document contents. Tries, in order:
  * the recorded line hint, a bounded window around it, then a full-document scan for the content
  * hash (exact); falls back to matching surrounding context (approximate); else orphaned.
+ *
+ * Once orphaned, stays orphaned permanently — re-running this cascade on every later edit let a
+ * single-line context match spuriously fire against unrelated code (matches skew toward the top of
+ * the file, since the context-match loop scans from line 0), so an orphaned comment could flicker
+ * to a wrong nearby line and then re-orphan there, compounding drift toward line 1 over an edit
+ * history. Freezing at the first orphan avoids that; the line number still tracks pure
+ * insert/delete drift elsewhere in the file via `shiftAnchorForChanges`, which is a deterministic
+ * shift, not a re-guess.
  */
 export function reanchor(document: vscode.TextDocument, anchor: Anchor): Anchor {
+  if (anchor.status === 'orphaned') {
+    return anchor;
+  }
+
   const lineCount = anchor.endLineHint - anchor.lineHint;
   const hintStart0 = anchor.lineHint - 1;
   const hintEnd0 = hintStart0 + lineCount;

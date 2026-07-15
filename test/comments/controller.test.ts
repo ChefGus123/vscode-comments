@@ -145,6 +145,70 @@ describe('renderDocument / syncThreads via document open', () => {
     await store.resolveComment('b.ts', created.id, { type: 'user' });
     await flush();
   });
+
+  it('includes the original snippet in the comment body once the anchor degrades', async () => {
+    const { store, commentController } = await setup();
+    const uri = await writeSourceFile('c.ts', 'x\ny\nz');
+    await store.addComment(
+      'c.ts',
+      { lineHint: 2, endLineHint: 2, contentHash: 'nomatch', contextBefore: 'nope', contextAfter: 'nope', originalContent: 'old code', status: 'exact' },
+      'orig',
+      { type: 'agent' }
+    );
+    await vscode.workspace.openTextDocument(uri);
+    await flush();
+
+    const thread = commentController.createCommentThread.mock.results[0].value;
+    expect(thread.comments[0].body.value).toContain('*Originally:*');
+    expect(thread.comments[0].body.value).toContain('old code');
+  });
+
+  it('omits the snippet block for an exact anchor even when originalContent is set', async () => {
+    const { store, commentController } = await setup();
+    const lines = ['one', 'two', 'three'];
+    const uri = await writeSourceFile('exact2.ts', lines.join('\n'));
+    const anchor = createAnchor(createTextDocument(uri, lines.join('\n')) as any, 1, 1);
+    await store.addComment('exact2.ts', anchor, 'hi', { type: 'user' });
+
+    await vscode.workspace.openTextDocument(uri);
+    await flush();
+
+    const thread = commentController.createCommentThread.mock.results[0].value;
+    expect(thread.comments[0].body.value).toBe('hi');
+  });
+
+  it('omits the snippet block when originalContent is missing (legacy anchor)', async () => {
+    const { store, commentController } = await setup();
+    const uri = await writeSourceFile('legacy.ts', 'x\ny\nz');
+    await store.addComment(
+      'legacy.ts',
+      { lineHint: 2, endLineHint: 2, contentHash: 'nomatch', contextBefore: 'nope', contextAfter: 'nope', status: 'exact' },
+      'orig',
+      { type: 'agent' }
+    );
+    await vscode.workspace.openTextDocument(uri);
+    await flush();
+
+    const thread = commentController.createCommentThread.mock.results[0].value;
+    expect(thread.comments[0].body.value).toBe('orig');
+  });
+
+  it('clamps the rendered range to the document bounds when the stored lineHint exceeds it', async () => {
+    const { store, commentController } = await setup();
+    const uri = await writeSourceFile('short.ts', 'a\nb');
+    await store.addComment(
+      'short.ts',
+      { lineHint: 50, endLineHint: 50, contentHash: 'h', contextBefore: '', contextAfter: '', status: 'orphaned' },
+      'stale',
+      { type: 'user' }
+    );
+    await vscode.workspace.openTextDocument(uri);
+    await flush();
+
+    const thread = commentController.createCommentThread.mock.results[0].value;
+    expect(thread.range.start.line).toBeLessThanOrEqual(1);
+    expect(thread.range.end.line).toBeLessThanOrEqual(1);
+  });
 });
 
 describe('onStoreChanged', () => {
@@ -319,6 +383,26 @@ describe('onDocumentChanged debounce + reanchorAfterChange', () => {
     expect((await store.loadFile('a.ts')).comments).toHaveLength(0);
   });
 
+  it('reanchors an exact comment to approximate when an overlapping edit changes its own line content', async () => {
+    const { store } = await setup();
+    const lines = ['before', 'target', 'after'];
+    const uri = await writeSourceFile('shift.ts', lines.join('\n'));
+    const anchor = createAnchor(createTextDocument(uri, lines.join('\n')) as any, 1, 1); // exact match on 'target'
+    await store.addComment('shift.ts', anchor, 'hi', { type: 'user' });
+    const doc = await vscode.workspace.openTextDocument(uri);
+    await flush();
+    expect((await store.loadFile('shift.ts')).comments[0].anchor.status).toBe('exact');
+
+    // A real edit to the comment's own line: the buffer changes first (as VS Code would apply it),
+    // then the change event fires — content hash no longer matches, but context still does.
+    (doc as any).__setText('before\nCHANGED\nafter');
+    mockVscode._emitters.didChangeTextDocument.fire({ document: doc, contentChanges: [{ range: new vscode.Range(1, 0, 1, 0), text: 'CHANGED' }] });
+    await jest.advanceTimersByTimeAsync(1000);
+
+    const data = await store.loadFile('shift.ts');
+    expect(data.comments[0].anchor.status).toBe('approximate');
+  });
+
   it('debounces rapid edits and reanchors comments once after the quiet period', async () => {
     const { store } = await setup();
     const uri = await writeSourceFile('a.ts', 'one\ntwo\nthree');
@@ -334,6 +418,24 @@ describe('onDocumentChanged debounce + reanchorAfterChange', () => {
 
     const data = await store.loadFile('a.ts');
     expect(data.comments[0].id).toBe(created.id);
+  });
+
+  it('keeps an already-orphaned comment orphaned and frozen even when a later overlapping edit restores content that would otherwise re-anchor exactly', async () => {
+    const { store } = await setup();
+    const uri = await writeSourceFile('frozen.ts', 'one\ntwo\nthree');
+    const anchor = createAnchor(createTextDocument(uri, 'one\ntwo\nthree') as any, 1, 1); // matches 'two' exactly
+    await store.addComment('frozen.ts', { ...anchor, status: 'orphaned' }, 'hi', { type: 'user' });
+    const doc = await vscode.workspace.openTextDocument(uri);
+    await flush();
+
+    // An edit overlapping the comment's own line — would satisfy the exact-match cascade if it ran,
+    // but the freeze must short-circuit before it gets the chance.
+    mockVscode._emitters.didChangeTextDocument.fire({ document: doc, contentChanges: [{ range: new vscode.Range(1, 0, 1, 0), text: 'two' }] });
+    await jest.advanceTimersByTimeAsync(1000);
+
+    const data = await store.loadFile('frozen.ts');
+    expect(data.comments[0].anchor.status).toBe('orphaned');
+    expect(data.comments[0].anchor.lineHint).toBe(anchor.lineHint);
   });
 });
 
