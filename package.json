@@ -281,12 +281,12 @@
     "configuration": {
       "title": "Agentic Comments",
       "properties": {
-        "agenticComments.mcp.alwaysIncludeSnippet": {
+        "agentComments.mcp.alwaysIncludeSnippet": {
           "type": "boolean",
           "default": true,
           "markdownDescription": "Experimental. Include the original commented-on code snippet (`originalContent`) on every MCP comment response, not just ones with an uncertain anchor location — saves an agent a round trip to read the file. Turn off to only include it when `locationUncertain` is true."
         },
-        "agenticComments.mcp.snippetMaxChars": {
+        "agentComments.mcp.snippetMaxChars": {
           "type": "number",
           "default": 500,
           "minimum": 0,
