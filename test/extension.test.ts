@@ -119,6 +119,16 @@ describe('registered commands delegate to the right collaborator', () => {
     await Promise.all(context.subscriptions.map((d) => d.dispose()));
   });
 
+  it('editComment / saveComment / cancelEditComment delegate to the controller', async () => {
+    const context = await activateNormally();
+    commandHandler('agentComments.editComment')(undefined);
+    await commandHandler('agentComments.saveComment')(undefined);
+    await commandHandler('agentComments.cancelEditComment')(undefined);
+    // Each of these hits the controller's own "no parent comment" warning path, proving the wiring runs end to end.
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledTimes(3);
+    await Promise.all(context.subscriptions.map((d) => d.dispose()));
+  });
+
   it('revealComment forwards file/line/commentId to the controller', async () => {
     const context = await activateNormally();
     await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(repoUri, 'a.ts'), Buffer.from('one\ntwo', 'utf8'));

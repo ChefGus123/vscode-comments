@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { CommentStore } from '../storage/store';
 import { canonicalizeRelativePath, resolveWorkspaceRelativePath, toWorkspaceRelativePath } from '../storage/paths';
 import { createAnchorFromContent } from '../anchoring/anchor';
+import { truncateSnippet } from '../anchoring/snippet';
 import { ToolCommentView } from '../types';
 
 export const AUTH_HEADER = 'x-agent-comments-token';
@@ -26,11 +27,27 @@ interface McpCommentEntry {
   text: string;
   author: 'user' | 'agent';
   locationUncertain?: true;
+  originalContent?: string;
   status?: 'resolved';
   resolvedBy?: 'user' | 'agent';
 }
 
-function toMcpCommentEntry(c: ToolCommentView): McpCommentEntry {
+interface SnippetConfig {
+  always: boolean;
+  maxChars: number;
+}
+
+/** Read once per tool call, not once per comment — `getConfiguration` is cheap but there's no
+ * reason to re-read it N times for one response. */
+function getSnippetConfig(): SnippetConfig {
+  const config = vscode.workspace.getConfiguration('agenticComments');
+  return {
+    always: config.get<boolean>('mcp.alwaysIncludeSnippet', true),
+    maxChars: config.get<number>('mcp.snippetMaxChars', 500),
+  };
+}
+
+function toMcpCommentEntry(c: ToolCommentView, snippetConfig: SnippetConfig): McpCommentEntry {
   const entry: McpCommentEntry = {
     id: c.id,
     line: c.line,
@@ -42,6 +59,9 @@ function toMcpCommentEntry(c: ToolCommentView): McpCommentEntry {
   }
   if (c.anchorStatus !== 'exact') {
     entry.locationUncertain = true;
+  }
+  if (c.originalContent && snippetConfig.maxChars > 0 && (snippetConfig.always || c.anchorStatus !== 'exact')) {
+    entry.originalContent = truncateSnippet(c.originalContent, snippetConfig.maxChars);
   }
   if (c.status === 'resolved') {
     entry.status = 'resolved';
@@ -139,7 +159,7 @@ export class AgentCommentsMcpServer implements vscode.Disposable {
         title: 'List unresolved comments',
         description:
           'Lists unresolved review comments, grouped by file. Omit "file" to list across the whole workspace. ' +
-          '"locationUncertain: true" means the code nearby changed and the line number may be off.'+ 
+          '"locationUncertain: true" means the code nearby changed and the line number may be off. ' +
           'Use when the user/agent asks you to see comments they left you',
         inputSchema: {
           file: z.string().optional().describe('Workspace-relative file path. Omit for the whole workspace.'),
@@ -155,13 +175,14 @@ export class AgentCommentsMcpServer implements vscode.Disposable {
           canonicalFile = resolved.canonicalFile;
         }
         const comments = await this.store.listUnresolved(canonicalFile);
+        const snippetConfig = getSnippetConfig();
         const files: Record<string, { fileStatus?: 'file-not-found'; comments: McpCommentEntry[] }> = {};
         for (const c of comments) {
           const group = (files[c.file] ??= { comments: [] });
           if (c.fileStatus !== 'ok') {
             group.fileStatus = c.fileStatus;
           }
-          group.comments.push(toMcpCommentEntry(c));
+          group.comments.push(toMcpCommentEntry(c, snippetConfig));
         }
         return asResult({ files });
       }
@@ -173,7 +194,7 @@ export class AgentCommentsMcpServer implements vscode.Disposable {
         title: 'Get comments for files (bulk)',
         description:
           'Gets all comments for one or more files, grouped by file, optionally including resolved ones. ' +
-          'A "status": "resolved" entry means resolved; "resolvedBy" comes with it.' + 
+          '"locationUncertain: true" means the code nearby changed and the line number may be off. ' +
           'Use when the user/agent asks you to see comments they left you at a specific file',
         inputSchema: {
           files: z.array(z.string()).min(1).describe('Workspace-relative file paths.'),
@@ -181,6 +202,7 @@ export class AgentCommentsMcpServer implements vscode.Disposable {
         },
       },
       async ({ files, includeResolved }) => {
+        const snippetConfig = getSnippetConfig();
         const perFile = await Promise.all(
           files.map(async (file) => {
             const resolved = resolveCanonicalFile(file);
@@ -191,7 +213,7 @@ export class AgentCommentsMcpServer implements vscode.Disposable {
             const fileStatus =
               comments.length > 0 ? comments[0].fileStatus : (await this.store.loadFile(resolved.canonicalFile)).fileStatus;
             const group: { fileStatus?: 'file-not-found'; comments: McpCommentEntry[] } = {
-              comments: comments.map(toMcpCommentEntry),
+              comments: comments.map((c) => toMcpCommentEntry(c, snippetConfig)),
             };
             if (fileStatus !== 'ok') {
               group.fileStatus = fileStatus;

@@ -146,6 +146,34 @@ describe('getTreeItem — comment nodes', () => {
     expect((item.tooltip as vscode.MarkdownString).value).toContain('Agent');
   });
 
+  it('includes the original snippet in the tooltip for a degraded anchor with originalContent set', () => {
+    const item = provider.getTreeItem({
+      kind: 'comment',
+      comment: comment({ anchorStatus: 'orphaned', originalContent: 'const old = 1;' }),
+    });
+    const tooltip = (item.tooltip as vscode.MarkdownString).value ?? '';
+    expect(tooltip).toContain('*Originally:*');
+    expect(tooltip).toContain('const old = 1;');
+  });
+
+  it('omits the snippet from the tooltip for an exact anchor even when originalContent is set', () => {
+    const item = provider.getTreeItem({
+      kind: 'comment',
+      comment: comment({ anchorStatus: 'exact', originalContent: 'const old = 1;' }),
+    });
+    const tooltip = (item.tooltip as vscode.MarkdownString).value ?? '';
+    expect(tooltip).not.toContain('*Originally:*');
+  });
+
+  it('omits the snippet from the tooltip when originalContent is missing regardless of anchor status', () => {
+    const item = provider.getTreeItem({
+      kind: 'comment',
+      comment: comment({ anchorStatus: 'orphaned', originalContent: undefined }),
+    });
+    const tooltip = (item.tooltip as vscode.MarkdownString).value ?? '';
+    expect(tooltip).not.toContain('*Originally:*');
+  });
+
   it('attaches a reveal command only when the file still exists', () => {
     const okItem = provider.getTreeItem({ kind: 'comment', comment: comment({ fileStatus: 'ok' }) });
     expect(okItem.command).toBeDefined();

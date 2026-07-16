@@ -78,6 +78,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       wrapCommand('deleteComment', (thread?: vscode.CommentThread) => controller.deleteThread(thread))
     ),
     vscode.commands.registerCommand(
+      'agentComments.editComment',
+      wrapCommand('editComment', (comment?: vscode.Comment) => controller.editComment(comment))
+    ),
+    vscode.commands.registerCommand(
+      'agentComments.saveComment',
+      wrapCommand('saveComment', (comment?: vscode.Comment) => controller.saveComment(comment))
+    ),
+    vscode.commands.registerCommand(
+      'agentComments.cancelEditComment',
+      wrapCommand('cancelEditComment', (comment?: vscode.Comment) => controller.cancelComment(comment))
+    ),
+    vscode.commands.registerCommand(
       'agentComments.revealComment',
       wrapCommand('revealComment', (file?: string, line?: number, commentId?: string) =>
         controller.revealComment(file, line, commentId)

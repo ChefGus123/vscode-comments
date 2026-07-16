@@ -145,6 +145,70 @@ describe('renderDocument / syncThreads via document open', () => {
     await store.resolveComment('b.ts', created.id, { type: 'user' });
     await flush();
   });
+
+  it('includes the original snippet in the comment body once the anchor degrades', async () => {
+    const { store, commentController } = await setup();
+    const uri = await writeSourceFile('c.ts', 'x\ny\nz');
+    await store.addComment(
+      'c.ts',
+      { lineHint: 2, endLineHint: 2, contentHash: 'nomatch', contextBefore: 'nope', contextAfter: 'nope', originalContent: 'old code', status: 'exact' },
+      'orig',
+      { type: 'agent' }
+    );
+    await vscode.workspace.openTextDocument(uri);
+    await flush();
+
+    const thread = commentController.createCommentThread.mock.results[0].value;
+    expect(thread.comments[0].body.value).toContain('*Originally:*');
+    expect(thread.comments[0].body.value).toContain('old code');
+  });
+
+  it('omits the snippet block for an exact anchor even when originalContent is set', async () => {
+    const { store, commentController } = await setup();
+    const lines = ['one', 'two', 'three'];
+    const uri = await writeSourceFile('exact2.ts', lines.join('\n'));
+    const anchor = createAnchor(createTextDocument(uri, lines.join('\n')) as any, 1, 1);
+    await store.addComment('exact2.ts', anchor, 'hi', { type: 'user' });
+
+    await vscode.workspace.openTextDocument(uri);
+    await flush();
+
+    const thread = commentController.createCommentThread.mock.results[0].value;
+    expect(thread.comments[0].body.value).toBe('hi');
+  });
+
+  it('omits the snippet block when originalContent is missing (legacy anchor)', async () => {
+    const { store, commentController } = await setup();
+    const uri = await writeSourceFile('legacy.ts', 'x\ny\nz');
+    await store.addComment(
+      'legacy.ts',
+      { lineHint: 2, endLineHint: 2, contentHash: 'nomatch', contextBefore: 'nope', contextAfter: 'nope', status: 'exact' },
+      'orig',
+      { type: 'agent' }
+    );
+    await vscode.workspace.openTextDocument(uri);
+    await flush();
+
+    const thread = commentController.createCommentThread.mock.results[0].value;
+    expect(thread.comments[0].body.value).toBe('orig');
+  });
+
+  it('clamps the rendered range to the document bounds when the stored lineHint exceeds it', async () => {
+    const { store, commentController } = await setup();
+    const uri = await writeSourceFile('short.ts', 'a\nb');
+    await store.addComment(
+      'short.ts',
+      { lineHint: 50, endLineHint: 50, contentHash: 'h', contextBefore: '', contextAfter: '', status: 'orphaned' },
+      'stale',
+      { type: 'user' }
+    );
+    await vscode.workspace.openTextDocument(uri);
+    await flush();
+
+    const thread = commentController.createCommentThread.mock.results[0].value;
+    expect(thread.range.start.line).toBeLessThanOrEqual(1);
+    expect(thread.range.end.line).toBeLessThanOrEqual(1);
+  });
 });
 
 describe('onStoreChanged', () => {
@@ -189,12 +253,40 @@ describe('onStoreChanged', () => {
     expect(thread.comments[0].label).toBe('resolved by agent');
   });
 
+  it('a resolve event overrides an in-progress edit, resetting the comment back to Preview mode instead of leaving it stuck', async () => {
+    const { store, controller, commentController } = await setup();
+    const uri = await writeSourceFile('a.ts', 'one\ntwo');
+    const created = await store.addComment('a.ts', { lineHint: 1, endLineHint: 1, contentHash: 'h', contextBefore: '', contextAfter: 'two', status: 'exact' }, 'hi', { type: 'user' });
+    await vscode.workspace.openTextDocument(uri);
+    await flush();
+    const thread = commentController.createCommentThread.mock.results[0].value;
+    const comment = thread.comments[0];
+    controller.editComment(comment);
+
+    await store.resolveComment('a.ts', created.id, { type: 'agent' });
+    await flush();
+
+    expect(thread.contextValue).toBe('resolved');
+    expect(thread.comments[0].mode).toBe(vscode.CommentMode.Preview);
+    expect(thread.comments[0].label).toBe('resolved by agent');
+    expect((controller as any).editingCommentIds.has(created.id)).toBe(false);
+  });
+
   it('handles a resolve event for a file with no rendered thread by falling through to the default path', async () => {
     const { store } = await setup();
     // Never opened in an editor, so there is no rendered thread and no open document for it.
     await writeSourceFile('never-opened.ts', 'x');
     const created = await store.addComment('never-opened.ts', { lineHint: 1, endLineHint: 1, contentHash: 'h', contextBefore: '', contextAfter: '', status: 'exact' }, 'hi', { type: 'user' });
     await expect(store.resolveComment('never-opened.ts', created.id, { type: 'user' })).resolves.toBeDefined();
+    await flush();
+  });
+
+  it('handles an edit event for a file with no rendered thread by falling through to the default path', async () => {
+    const { store } = await setup();
+    // Never opened in an editor, so there is no rendered thread and no open document for it.
+    await writeSourceFile('never-opened.ts', 'x');
+    const created = await store.addComment('never-opened.ts', { lineHint: 1, endLineHint: 1, contentHash: 'h', contextBefore: '', contextAfter: '', status: 'exact' }, 'hi', { type: 'user' });
+    await expect(store.updateCommentText('never-opened.ts', created.id, 'edited')).resolves.toBeDefined();
     await flush();
   });
 
@@ -319,6 +411,26 @@ describe('onDocumentChanged debounce + reanchorAfterChange', () => {
     expect((await store.loadFile('a.ts')).comments).toHaveLength(0);
   });
 
+  it('reanchors an exact comment to approximate when an overlapping edit changes its own line content', async () => {
+    const { store } = await setup();
+    const lines = ['before', 'target', 'after'];
+    const uri = await writeSourceFile('shift.ts', lines.join('\n'));
+    const anchor = createAnchor(createTextDocument(uri, lines.join('\n')) as any, 1, 1); // exact match on 'target'
+    await store.addComment('shift.ts', anchor, 'hi', { type: 'user' });
+    const doc = await vscode.workspace.openTextDocument(uri);
+    await flush();
+    expect((await store.loadFile('shift.ts')).comments[0].anchor.status).toBe('exact');
+
+    // A real edit to the comment's own line: the buffer changes first (as VS Code would apply it),
+    // then the change event fires — content hash no longer matches, but context still does.
+    (doc as any).__setText('before\nCHANGED\nafter');
+    mockVscode._emitters.didChangeTextDocument.fire({ document: doc, contentChanges: [{ range: new vscode.Range(1, 0, 1, 0), text: 'CHANGED' }] });
+    await jest.advanceTimersByTimeAsync(1000);
+
+    const data = await store.loadFile('shift.ts');
+    expect(data.comments[0].anchor.status).toBe('approximate');
+  });
+
   it('debounces rapid edits and reanchors comments once after the quiet period', async () => {
     const { store } = await setup();
     const uri = await writeSourceFile('a.ts', 'one\ntwo\nthree');
@@ -334,6 +446,24 @@ describe('onDocumentChanged debounce + reanchorAfterChange', () => {
 
     const data = await store.loadFile('a.ts');
     expect(data.comments[0].id).toBe(created.id);
+  });
+
+  it('keeps an already-orphaned comment orphaned and frozen even when a later overlapping edit restores content that would otherwise re-anchor exactly', async () => {
+    const { store } = await setup();
+    const uri = await writeSourceFile('frozen.ts', 'one\ntwo\nthree');
+    const anchor = createAnchor(createTextDocument(uri, 'one\ntwo\nthree') as any, 1, 1); // matches 'two' exactly
+    await store.addComment('frozen.ts', { ...anchor, status: 'orphaned' }, 'hi', { type: 'user' });
+    const doc = await vscode.workspace.openTextDocument(uri);
+    await flush();
+
+    // An edit overlapping the comment's own line — would satisfy the exact-match cascade if it ran,
+    // but the freeze must short-circuit before it gets the chance.
+    mockVscode._emitters.didChangeTextDocument.fire({ document: doc, contentChanges: [{ range: new vscode.Range(1, 0, 1, 0), text: 'two' }] });
+    await jest.advanceTimersByTimeAsync(1000);
+
+    const data = await store.loadFile('frozen.ts');
+    expect(data.comments[0].anchor.status).toBe('orphaned');
+    expect(data.comments[0].anchor.lineHint).toBe(anchor.lineHint);
   });
 });
 
@@ -351,6 +481,26 @@ describe('toVscodeComment edge cases (white-box)', () => {
       updatedAt: '',
     });
     expect(vscodeComment.label).toBe('resolved by unknown');
+  });
+
+  it('marks an unresolved comment editable and a resolved comment not editable, and carries id/rawText', async () => {
+    const { controller } = await setup();
+    const base = {
+      id: 'c1',
+      anchor: { lineHint: 1, endLineHint: 1, contentHash: 'h', contextBefore: '', contextAfter: '', status: 'exact' as const },
+      author: { type: 'user' as const },
+      text: 'hi',
+      resolvedBy: null,
+      createdAt: '',
+      updatedAt: '',
+    };
+    const unresolved = (controller as any).toVscodeComment({ ...base, status: 'unresolved' });
+    expect(unresolved.contextValue).toBe('editable');
+    expect(unresolved.id).toBe('c1');
+    expect(unresolved.rawText).toBe('hi');
+
+    const resolved = (controller as any).toVscodeComment({ ...base, status: 'resolved', resolvedBy: { type: 'user' } });
+    expect(resolved.contextValue).toBeUndefined();
   });
 });
 
@@ -449,7 +599,7 @@ describe('resolveThread / reopenThread / deleteThread', () => {
     const uri = await writeSourceFile('a.ts', 'one\ntwo');
     const created = await store.addComment('a.ts', { lineHint: 1, endLineHint: 1, contentHash: 'h', contextBefore: '', contextAfter: 'two', status: 'exact' }, 'hi', { type: 'user' });
 
-    const thread = { uri, comments: [{ contextValue: created.id }] } as any;
+    const thread = { uri, comments: [{ id: created.id }] } as any;
     await controller.resolveThread(thread, 'user');
     expect((await store.loadFile('a.ts')).comments).toHaveLength(0);
 
@@ -458,6 +608,161 @@ describe('resolveThread / reopenThread / deleteThread', () => {
 
     await controller.deleteThread(thread);
     expect((await store.loadFile('a.ts')).comments).toHaveLength(0);
+  });
+});
+
+describe('editComment / saveComment / cancelComment', () => {
+  it('warns for editComment/saveComment/cancelComment when the comment has no parent thread', async () => {
+    const { controller } = await setup();
+    controller.editComment(undefined);
+    await controller.saveComment(undefined);
+    await controller.cancelComment(undefined);
+    controller.editComment({} as any);
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledTimes(4);
+  });
+
+  it('editComment flips mode to Editing, sets body to rawText, and reassigns the parent comments array', async () => {
+    const { store, controller, commentController } = await setup();
+    const uri = await writeSourceFile('a.ts', 'one\ntwo\nthree');
+    await store.addComment('a.ts', { lineHint: 2, endLineHint: 2, contentHash: 'h', contextBefore: 'one', contextAfter: 'three', status: 'exact' }, 'hello', { type: 'user' });
+    await vscode.workspace.openTextDocument(uri);
+    await flush();
+
+    const thread = commentController.createCommentThread.mock.results[0].value;
+    const comment = thread.comments[0];
+    const originalArray = thread.comments;
+
+    controller.editComment(comment);
+
+    expect(comment.mode).toBe(vscode.CommentMode.Editing);
+    expect(comment.body).toBe('hello');
+    expect(thread.comments).not.toBe(originalArray);
+    expect(thread.comments[0]).toBe(comment);
+  });
+
+  it('saveComment persists the new text via the store and the re-rendered comment shows it in Preview mode', async () => {
+    const { store, controller, commentController } = await setup();
+    const uri = await writeSourceFile('a.ts', 'one\ntwo\nthree');
+    await store.addComment('a.ts', { lineHint: 2, endLineHint: 2, contentHash: 'h', contextBefore: 'one', contextAfter: 'three', status: 'exact' }, 'hello', { type: 'user' });
+    await vscode.workspace.openTextDocument(uri);
+    await flush();
+
+    const thread = commentController.createCommentThread.mock.results[0].value;
+    const comment = thread.comments[0];
+    controller.editComment(comment);
+    comment.body = 'edited text';
+
+    await controller.saveComment(comment);
+    await flush();
+
+    const data = await store.loadFile('a.ts');
+    expect(data.comments[0].text).toBe('edited text');
+    expect(thread.comments[0].mode).toBe(vscode.CommentMode.Preview);
+    expect(thread.comments[0].body.value).toBe('edited text');
+  });
+
+  it('warns instead of silently discarding the edit when the comment was resolved elsewhere before Save ran', async () => {
+    const { store, controller, commentController } = await setup();
+    const uri = await writeSourceFile('a.ts', 'one\ntwo\nthree');
+    const created = await store.addComment('a.ts', { lineHint: 2, endLineHint: 2, contentHash: 'h', contextBefore: 'one', contextAfter: 'three', status: 'exact' }, 'hello', { type: 'user' });
+    await vscode.workspace.openTextDocument(uri);
+    await flush();
+
+    const thread = commentController.createCommentThread.mock.results[0].value;
+    const comment = thread.comments[0];
+    controller.editComment(comment);
+    comment.body = 'edited text';
+
+    // Resolved out from under the edit before Save is clicked — updateCommentText can no longer find
+    // it in the live array, so the save must be reported as failed rather than silently dropped.
+    await store.resolveComment('a.ts', created.id, { type: 'agent' });
+    await flush();
+
+    await controller.saveComment(comment);
+    await flush();
+
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('could not save'));
+    const archived = await store.getComments('a.ts', true);
+    expect(archived[0].text).toBe('hello');
+  });
+
+  it('saveComment reads text from a MarkdownString body just like a plain string body', async () => {
+    const { store, controller, commentController } = await setup();
+    const uri = await writeSourceFile('a.ts', 'one\ntwo\nthree');
+    await store.addComment('a.ts', { lineHint: 2, endLineHint: 2, contentHash: 'h', contextBefore: 'one', contextAfter: 'three', status: 'exact' }, 'hello', { type: 'user' });
+    await vscode.workspace.openTextDocument(uri);
+    await flush();
+
+    const thread = commentController.createCommentThread.mock.results[0].value;
+    const comment = thread.comments[0];
+    controller.editComment(comment);
+    comment.body = new vscode.MarkdownString('edited via markdown');
+
+    await controller.saveComment(comment);
+    await flush();
+
+    const data = await store.loadFile('a.ts');
+    expect(data.comments[0].text).toBe('edited via markdown');
+  });
+
+  it('treats a blank/whitespace-only save as an implicit cancel, leaving stored text untouched', async () => {
+    const { store, controller, commentController } = await setup();
+    const uri = await writeSourceFile('a.ts', 'one\ntwo\nthree');
+    await store.addComment('a.ts', { lineHint: 2, endLineHint: 2, contentHash: 'h', contextBefore: 'one', contextAfter: 'three', status: 'exact' }, 'hello', { type: 'user' });
+    await vscode.workspace.openTextDocument(uri);
+    await flush();
+
+    const thread = commentController.createCommentThread.mock.results[0].value;
+    const comment = thread.comments[0];
+    controller.editComment(comment);
+    comment.body = '   ';
+
+    await controller.saveComment(comment);
+    await flush();
+
+    const data = await store.loadFile('a.ts');
+    expect(data.comments[0].text).toBe('hello');
+    expect(thread.comments[0].mode).toBe(vscode.CommentMode.Preview);
+  });
+
+  it('cancelComment discards edits and restores the original Preview-mode body without persisting', async () => {
+    const { store, controller, commentController } = await setup();
+    const uri = await writeSourceFile('a.ts', 'one\ntwo\nthree');
+    await store.addComment('a.ts', { lineHint: 2, endLineHint: 2, contentHash: 'h', contextBefore: 'one', contextAfter: 'three', status: 'exact' }, 'hello', { type: 'user' });
+    await vscode.workspace.openTextDocument(uri);
+    await flush();
+
+    const thread = commentController.createCommentThread.mock.results[0].value;
+    const comment = thread.comments[0];
+    controller.editComment(comment);
+    comment.body = 'unsaved edit';
+
+    await controller.cancelComment(comment);
+    await flush();
+
+    const data = await store.loadFile('a.ts');
+    expect(data.comments[0].text).toBe('hello');
+    expect(thread.comments[0].mode).toBe(vscode.CommentMode.Preview);
+    expect(thread.comments[0].body.value).toBe('hello');
+  });
+
+  it('cancelComment is a no-op on the thread when the comment was resolved elsewhere first (nothing left to restore it from)', async () => {
+    const { store, controller, commentController } = await setup();
+    const uri = await writeSourceFile('a.ts', 'one\ntwo\nthree');
+    const created = await store.addComment('a.ts', { lineHint: 2, endLineHint: 2, contentHash: 'h', contextBefore: 'one', contextAfter: 'three', status: 'exact' }, 'hello', { type: 'user' });
+    await vscode.workspace.openTextDocument(uri);
+    await flush();
+
+    const thread = commentController.createCommentThread.mock.results[0].value;
+    const comment = thread.comments[0];
+    controller.editComment(comment);
+    comment.body = 'unsaved edit';
+
+    await store.resolveComment('a.ts', created.id, { type: 'agent' });
+    await flush();
+    // The resolve event already reset this thread to Preview/resolved on its own; cancelComment
+    // should not throw or misbehave when the comment it was tracking is no longer live.
+    await expect(controller.cancelComment(comment)).resolves.toBeUndefined();
   });
 });
 

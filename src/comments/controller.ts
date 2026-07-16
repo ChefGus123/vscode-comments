@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { CommentStore, StoreChangeEvent } from '../storage/store';
 import { resolveWorkspaceRelativePath, toWorkspaceRelativePath } from '../storage/paths';
 import { createAnchor, reanchor, shiftAnchorForChanges } from '../anchoring/anchor';
+import { formatOriginalSnippet, UI_SNIPPET_MAX_CHARS } from '../anchoring/snippet';
 import { AnchorStatus, AuthorType, StoredComment } from '../types';
 
 const DEBOUNCE_MS = 400;
@@ -28,12 +29,26 @@ interface RenderedThread {
   status: StoredComment['status'];
 }
 
+/** Rendered `vscode.Comment` with extra fields the base interface doesn't provide: `contextValue`
+ * is reused by VS Code for `comments/comment/title` menu gating (must equal exactly "editable" —
+ * it can't double as an id), so the id and a back-reference to the owning thread live here instead. */
+interface EditableComment extends vscode.Comment {
+  id: string;
+  parent?: vscode.CommentThread;
+  /** Plain text (no markdown, no "*Originally:*" snippet suffix) shown while editing. */
+  rawText: string;
+}
+
 export class AgentCommentsController implements vscode.Disposable {
   private readonly controller: vscode.CommentController;
   private readonly disposables: vscode.Disposable[] = [];
   private readonly threadsByFile = new Map<string, Map<string, RenderedThread>>();
   private readonly debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly reanchoredOnOpen = new Set<string>();
+  /** Comment ids currently in the gutter's editable textarea. Re-renders (onDidChangeVisibleTextEditors,
+   * onStoreChanged, etc.) fire independently of that in-progress edit and must not rebuild these comments
+   * via toVscodeComment — that would stomp CommentMode.Editing back to Preview mid-edit. */
+  private readonly editingCommentIds = new Set<string>();
   private pendingDraftThread: vscode.CommentThread | undefined;
 
   constructor(private readonly store: CommentStore, private readonly extensionUri: vscode.Uri) {
@@ -126,15 +141,18 @@ export class AgentCommentsController implements vscode.Disposable {
     for (const comment of comments) {
       seen.add(comment.id);
       const rendered = existing.get(comment.id);
-      const range = new vscode.Range(comment.anchor.lineHint - 1, 0, comment.anchor.endLineHint - 1, 0);
+      const maxLine = Math.max(0, document.lineCount - 1);
+      const rangeStart = Math.min(Math.max(0, comment.anchor.lineHint - 1), maxLine);
+      const rangeEnd = Math.min(Math.max(rangeStart, comment.anchor.endLineHint - 1), maxLine);
+      const range = new vscode.Range(rangeStart, 0, rangeEnd, 0);
       if (rendered) {
         rendered.thread.range = range;
         rendered.status = comment.status;
         this.updateThreadComment(rendered.thread, comment);
       } else {
-        const thread = this.controller.createCommentThread(document.uri, range, [
-          this.toVscodeComment(comment),
-        ]);
+        const vsComment = this.toVscodeComment(comment);
+        const thread = this.controller.createCommentThread(document.uri, range, [vsComment]);
+        vsComment.parent = thread;
         thread.canReply = false;
         thread.contextValue = comment.status;
         thread.label = labelFor(comment.anchor.status);
@@ -148,26 +166,52 @@ export class AgentCommentsController implements vscode.Disposable {
       if (!seen.has(id) && rendered.status !== 'resolved') {
         rendered.thread.dispose();
         existing.delete(id);
+        this.editingCommentIds.delete(id);
       }
     }
   }
 
-  private updateThreadComment(thread: vscode.CommentThread, comment: StoredComment): void {
+  /** Single choke point for rebuilding a rendered comment from its stored state. Skips comments
+   * currently in the gutter's edit textarea (editingCommentIds) so callers never need to remember
+   * that check themselves — centralized here instead of at each call site. Pass `force: true` to
+   * rebuild (and clear the editing guard) even mid-edit: the one atomic call is what save/cancel/
+   * resolve use to end an edit, so there's no separate "clear the guard, then remember to rebuild"
+   * step for a caller to get wrong. */
+  private updateThreadComment(thread: vscode.CommentThread, comment: StoredComment, options?: { force?: boolean }): void {
+    if (this.editingCommentIds.has(comment.id)) {
+      if (!options?.force) {
+        return;
+      }
+      this.editingCommentIds.delete(comment.id);
+    }
     thread.contextValue = comment.status;
     thread.label = labelFor(comment.anchor.status);
-    thread.comments = [this.toVscodeComment(comment)];
+    const vsComment = this.toVscodeComment(comment);
+    vsComment.parent = thread;
+    thread.comments = [vsComment];
   }
 
-  private toVscodeComment(comment: StoredComment): vscode.Comment {
+  private commentBody(comment: StoredComment): vscode.MarkdownString {
+    const { anchor } = comment;
+    let value = comment.text;
+    if (anchor.status !== 'exact' && anchor.originalContent) {
+      value += formatOriginalSnippet(anchor.originalContent, UI_SNIPPET_MAX_CHARS);
+    }
+    return new vscode.MarkdownString(value);
+  }
+
+  private toVscodeComment(comment: StoredComment): EditableComment {
     return {
-      body: new vscode.MarkdownString(comment.text),
+      body: this.commentBody(comment),
       mode: vscode.CommentMode.Preview,
       author: {
         name: comment.author.type === 'user' ? 'You' : 'Agent',
         iconPath: iconFor(comment.author.type, comment.anchor.status, this.extensionUri),
       },
       label: comment.status === 'resolved' ? `resolved by ${comment.resolvedBy?.type ?? 'unknown'}` : labelFor(comment.anchor.status),
-      contextValue: comment.id,
+      contextValue: comment.status === 'unresolved' ? 'editable' : undefined,
+      id: comment.id,
+      rawText: comment.text,
     };
   }
 
@@ -179,6 +223,7 @@ export class AgentCommentsController implements vscode.Disposable {
         }
       }
       this.threadsByFile.clear();
+      this.editingCommentIds.clear();
       return;
     }
 
@@ -188,6 +233,7 @@ export class AgentCommentsController implements vscode.Disposable {
       if (rendered) {
         rendered.thread.dispose();
         threads?.delete(event.comment.id);
+        this.editingCommentIds.delete(event.comment.id);
       }
       return;
     }
@@ -197,7 +243,21 @@ export class AgentCommentsController implements vscode.Disposable {
       if (rendered) {
         rendered.status = 'resolved';
         rendered.thread.contextValue = 'resolved';
-        this.updateThreadComment(rendered.thread, event.comment);
+        // A resolve overrides any in-progress edit rather than deferring to it — once resolved, the
+        // comment leaves the live JSON for good (until reopened), so nothing will ever revisit this
+        // thread to apply a deferred rebuild. force:true lets it through immediately instead of
+        // leaving the textarea stuck open with stale content for the rest of the session.
+        this.updateThreadComment(rendered.thread, event.comment, { force: true });
+        return;
+      }
+    }
+
+    if (event.kind === 'edit' && event.comment) {
+      const rendered = this.threadsByFile.get(event.filePath)?.get(event.comment.id);
+      if (rendered) {
+        // Always fired by our own saveComment below — force the rebuild back to Preview regardless
+        // of the editing guard, since this event *is* the end of that edit.
+        this.updateThreadComment(rendered.thread, event.comment, { force: true });
         return;
       }
     }
@@ -229,8 +289,9 @@ export class AgentCommentsController implements vscode.Disposable {
     const filePath = toWorkspaceRelativePath(document.uri);
     const threads = this.threadsByFile.get(filePath);
     if (threads) {
-      for (const [, rendered] of threads) {
+      for (const [id, rendered] of threads) {
         rendered.thread.dispose();
+        this.editingCommentIds.delete(id);
       }
       this.threadsByFile.delete(filePath);
     }
@@ -325,7 +386,7 @@ export class AgentCommentsController implements vscode.Disposable {
   }
 
   async resolveThread(thread: vscode.CommentThread | undefined, resolvedByType: AuthorType): Promise<void> {
-    const id = thread?.comments[0]?.contextValue;
+    const id = (thread?.comments[0] as EditableComment | undefined)?.id;
     if (!thread || !id) {
       vscode.window.showWarningMessage('Agentic Comments: use the Resolve button on a comment thread.');
       return;
@@ -335,7 +396,7 @@ export class AgentCommentsController implements vscode.Disposable {
   }
 
   async reopenThread(thread: vscode.CommentThread | undefined): Promise<void> {
-    const id = thread?.comments[0]?.contextValue;
+    const id = (thread?.comments[0] as EditableComment | undefined)?.id;
     if (!thread || !id) {
       vscode.window.showWarningMessage('Agentic Comments: use the Reopen button on a resolved comment thread.');
       return;
@@ -345,13 +406,73 @@ export class AgentCommentsController implements vscode.Disposable {
   }
 
   async deleteThread(thread: vscode.CommentThread | undefined): Promise<void> {
-    const id = thread?.comments[0]?.contextValue;
+    const id = (thread?.comments[0] as EditableComment | undefined)?.id;
     if (!thread || !id) {
       vscode.window.showWarningMessage('Agentic Comments: use the Delete button on a comment thread.');
       return;
     }
     const filePath = toWorkspaceRelativePath(thread.uri);
     await this.store.deleteComment(filePath, id);
+  }
+
+  /** Flips a comment into its editable textarea. Only reachable via the gutter's
+   * comments/comment/title menu (gated on `comment == editable`), never via MCP or the tree view. */
+  editComment(comment: vscode.Comment | undefined): void {
+    const c = comment as EditableComment | undefined;
+    if (!c?.parent) {
+      vscode.window.showWarningMessage('Agentic Comments: use the Edit button on a comment.');
+      return;
+    }
+    this.editingCommentIds.add(c.id);
+    c.mode = vscode.CommentMode.Editing;
+    c.body = c.rawText;
+    // New array reference required — VS Code only re-renders comments on reference change.
+    c.parent.comments = [...c.parent.comments];
+  }
+
+  async saveComment(comment: vscode.Comment | undefined): Promise<void> {
+    const c = comment as EditableComment | undefined;
+    if (!c?.parent) {
+      vscode.window.showWarningMessage('Agentic Comments: use the Save button on a comment.');
+      return;
+    }
+    const newText = typeof c.body === 'string' ? c.body : c.body.value;
+    if (!newText.trim()) {
+      // Blank save is treated as cancel, same as a blank reply in createComment.
+      await this.cancelComment(comment);
+      return;
+    }
+    // The store write below fires an 'edit' StoreChangeEvent; onStoreChanged's 'edit' branch
+    // rebuilds this thread with force:true, which lifts the editingCommentIds guard itself.
+    const filePath = toWorkspaceRelativePath(c.parent.uri);
+    const saved = await this.store.updateCommentText(filePath, c.id, newText);
+    if (!saved) {
+      // The comment was resolved or deleted elsewhere between opening the editor and clicking Save —
+      // that concurrent change already updated (or disposed) this thread on its own; the only thing
+      // left to do is let the user know their edit didn't get written anywhere.
+      vscode.window.showWarningMessage(
+        'Agentic Comments: could not save — this comment was resolved or deleted elsewhere.'
+      );
+    }
+  }
+
+  async cancelComment(comment: vscode.Comment | undefined): Promise<void> {
+    const c = comment as EditableComment | undefined;
+    if (!c?.parent) {
+      vscode.window.showWarningMessage('Agentic Comments: use the Cancel button on a comment.');
+      return;
+    }
+    // Store was never touched, so the live comment (if it's still there — it may have been resolved
+    // or deleted concurrently, in which case that event already updated/disposed this thread and
+    // already cleared the editing guard) still holds the original text; rebuild just this one thread
+    // from it, with force:true to lift the editing guard ourselves, rather than re-rendering the
+    // whole document.
+    const filePath = toWorkspaceRelativePath(c.parent.uri);
+    const data = await this.store.loadFile(filePath);
+    const stored = data.comments.find((sc) => sc.id === c.id);
+    if (stored) {
+      this.updateThreadComment(c.parent, stored, { force: true });
+    }
   }
 
   async revealComment(filePath: string | undefined, line: number | undefined, commentId?: string): Promise<void> {

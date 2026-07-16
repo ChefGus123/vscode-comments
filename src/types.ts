@@ -12,6 +12,9 @@ export interface Anchor {
   contentHash: string;
   contextBefore: string;
   contextAfter: string;
+  /** Raw text of the originally commented-on line(s), CRLF-normalized. Optional: anchors persisted
+   * before this field existed won't have it — treated as "no snippet available", never migrated. */
+  originalContent?: string;
   status: AnchorStatus;
 }
 
@@ -57,6 +60,7 @@ export interface ToolCommentView {
   line: number;
   endLine?: number;
   anchorStatus: AnchorStatus;
+  originalContent?: string;
   author: Author;
   text: string;
   createdAt: string;

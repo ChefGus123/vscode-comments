@@ -83,7 +83,7 @@ export class Selection extends Range {
 // ---------- Enums (plain objects; only member access is exercised at runtime) ----------
 
 export const FileType = { Unknown: 0, File: 1, Directory: 2, SymbolicLink: 64 } as const;
-export const CommentMode = { Editable: 0, Preview: 1 } as const;
+export const CommentMode = { Editing: 0, Preview: 1 } as const;
 export const CommentThreadCollapsibleState = { Collapsed: 0, Expanded: 1 } as const;
 export const TextEditorRevealType = { Default: 0, InCenter: 1, InCenterIfOutsideViewport: 2, AtTop: 3 } as const;
 export const TreeItemCollapsibleState = { None: 0, Collapsed: 1, Expanded: 2 } as const;
@@ -275,9 +275,27 @@ export const _emitters = {
   didChangeVisibleTextEditors: new EventEmitter<MockTextEditor[]>(),
 };
 
+// ---------- configuration ----------
+
+const configStore = new Map<string, unknown>();
+
+/** Test-only helper: `key` is the fully-qualified setting id, e.g. "agenticComments.mcp.snippetMaxChars". */
+export function __setConfig(key: string, value: unknown): void {
+  configStore.set(key, value);
+}
+
 // ---------- workspace ----------
 
 export const workspace = {
+  getConfiguration(section?: string) {
+    return {
+      get<T>(key: string, defaultValue?: T): T {
+        const fullKey = section ? `${section}.${key}` : key;
+        return configStore.has(fullKey) ? (configStore.get(fullKey) as T) : (defaultValue as T);
+      },
+    };
+  },
+
   workspaceFolders: undefined as Array<{ uri: Uri; name: string; index: number }> | undefined,
   textDocuments: [] as MockTextDocument[],
 
@@ -393,6 +411,7 @@ export const lm = {
 
 export function __reset(): void {
   fsStore.clear();
+  configStore.clear();
   workspace.workspaceFolders = undefined;
   workspace.textDocuments = [];
   window.activeTextEditor = undefined;

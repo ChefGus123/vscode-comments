@@ -206,6 +206,56 @@ describe('resolveComment', () => {
   });
 });
 
+describe('updateCommentText', () => {
+  it('updates the text and bumps updatedAt on a live unresolved comment', async () => {
+    const store = new CommentStore(storageUri);
+    await store.initialize();
+    await markSourceFileExists('a.ts');
+    const created = await store.addComment('a.ts', makeAnchor(), 'hello', author);
+
+    const updated = await store.updateCommentText('a.ts', created.id, 'edited text');
+    expect(updated?.text).toBe('edited text');
+    expect(updated?.updatedAt >= created.updatedAt).toBe(true);
+
+    const data = await store.loadFile('a.ts');
+    expect(data.comments[0].text).toBe('edited text');
+  });
+
+  it('fires an edit-kind change event', async () => {
+    const store = new CommentStore(storageUri);
+    await store.initialize();
+    await markSourceFileExists('a.ts');
+    const created = await store.addComment('a.ts', makeAnchor(), 'hello', author);
+
+    const events: string[] = [];
+    store.onDidChangeFile((e) => events.push(e.kind));
+    await store.updateCommentText('a.ts', created.id, 'edited text');
+    expect(events).toContain('edit');
+  });
+
+  it('returns undefined for an unknown comment id', async () => {
+    const store = new CommentStore(storageUri);
+    await store.initialize();
+    await markSourceFileExists('a.ts');
+    const result = await store.updateCommentText('a.ts', 'nope', 'edited text');
+    expect(result).toBeUndefined();
+  });
+
+  it('returns undefined for a comment that only exists in the archive (resolved comments are not editable)', async () => {
+    const store = new CommentStore(storageUri);
+    await store.initialize();
+    await markSourceFileExists('a.ts');
+    const created = await store.addComment('a.ts', makeAnchor(), 'hello', author);
+    await store.resolveComment('a.ts', created.id, author);
+
+    const result = await store.updateCommentText('a.ts', created.id, 'edited text');
+    expect(result).toBeUndefined();
+
+    const archived = await store.getComments('a.ts', true);
+    expect(archived[0].text).toBe('hello');
+  });
+});
+
 describe('reopenComment', () => {
   it('returns undefined when there is no archive at all for the file', async () => {
     const store = new CommentStore(storageUri);
@@ -441,6 +491,26 @@ describe('getComments', () => {
 
     const views = await store.getComments('a.ts', false);
     expect(views).toHaveLength(0);
+  });
+
+  it('round-trips the anchor originalContent onto the tool view', async () => {
+    const store = new CommentStore(storageUri);
+    await store.initialize();
+    await markSourceFileExists('a.ts');
+    await store.addComment('a.ts', makeAnchor({ originalContent: 'const x = 1;' }), 'note', author);
+
+    const views = await store.getComments('a.ts', false);
+    expect(views[0].originalContent).toBe('const x = 1;');
+  });
+
+  it('leaves originalContent undefined for a legacy anchor that never had it', async () => {
+    const store = new CommentStore(storageUri);
+    await store.initialize();
+    await markSourceFileExists('a.ts');
+    await store.addComment('a.ts', makeAnchor(), 'note', author);
+
+    const views = await store.getComments('a.ts', false);
+    expect(views[0].originalContent).toBeUndefined();
   });
 });
 
