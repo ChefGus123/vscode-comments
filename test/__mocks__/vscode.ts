@@ -279,7 +279,7 @@ export const _emitters = {
 
 const configStore = new Map<string, unknown>();
 
-/** Test-only helper: `key` is the fully-qualified setting id, e.g. "agentComments.mcp.snippetMaxChars". */
+/** Test-only helper: `key` is the fully-qualified setting id, e.g. "agenticComments.mcp.snippetMaxChars". */
 export function __setConfig(key: string, value: unknown): void {
   configStore.set(key, value);
 }

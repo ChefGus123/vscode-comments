@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { CommentStore, StoreChangeEvent } from '../storage/store';
 import { resolveWorkspaceRelativePath, toWorkspaceRelativePath } from '../storage/paths';
 import { createAnchor, reanchor, shiftAnchorForChanges } from '../anchoring/anchor';
-import { truncateSnippet, UI_SNIPPET_MAX_CHARS } from '../anchoring/snippet';
+import { formatOriginalSnippet, UI_SNIPPET_MAX_CHARS } from '../anchoring/snippet';
 import { AnchorStatus, AuthorType, StoredComment } from '../types';
 
 const DEBOUNCE_MS = 400;
@@ -173,10 +173,16 @@ export class AgentCommentsController implements vscode.Disposable {
 
   /** Single choke point for rebuilding a rendered comment from its stored state. Skips comments
    * currently in the gutter's edit textarea (editingCommentIds) so callers never need to remember
-   * that check themselves — centralized here instead of at each call site. */
-  private updateThreadComment(thread: vscode.CommentThread, comment: StoredComment): void {
+   * that check themselves — centralized here instead of at each call site. Pass `force: true` to
+   * rebuild (and clear the editing guard) even mid-edit: the one atomic call is what save/cancel/
+   * resolve use to end an edit, so there's no separate "clear the guard, then remember to rebuild"
+   * step for a caller to get wrong. */
+  private updateThreadComment(thread: vscode.CommentThread, comment: StoredComment, options?: { force?: boolean }): void {
     if (this.editingCommentIds.has(comment.id)) {
-      return;
+      if (!options?.force) {
+        return;
+      }
+      this.editingCommentIds.delete(comment.id);
     }
     thread.contextValue = comment.status;
     thread.label = labelFor(comment.anchor.status);
@@ -189,8 +195,7 @@ export class AgentCommentsController implements vscode.Disposable {
     const { anchor } = comment;
     let value = comment.text;
     if (anchor.status !== 'exact' && anchor.originalContent) {
-      const snippet = truncateSnippet(anchor.originalContent, UI_SNIPPET_MAX_CHARS);
-      value += `\n\n---\n*Originally:*\n\`\`\`\n${snippet}\n\`\`\``;
+      value += formatOriginalSnippet(anchor.originalContent, UI_SNIPPET_MAX_CHARS);
     }
     return new vscode.MarkdownString(value);
   }
@@ -240,10 +245,9 @@ export class AgentCommentsController implements vscode.Disposable {
         rendered.thread.contextValue = 'resolved';
         // A resolve overrides any in-progress edit rather than deferring to it — once resolved, the
         // comment leaves the live JSON for good (until reopened), so nothing will ever revisit this
-        // thread to apply a deferred rebuild. Clearing the guard lets it through immediately instead
-        // of leaving the textarea stuck open with stale content for the rest of the session.
-        this.editingCommentIds.delete(event.comment.id);
-        this.updateThreadComment(rendered.thread, event.comment);
+        // thread to apply a deferred rebuild. force:true lets it through immediately instead of
+        // leaving the textarea stuck open with stale content for the rest of the session.
+        this.updateThreadComment(rendered.thread, event.comment, { force: true });
         return;
       }
     }
@@ -251,7 +255,9 @@ export class AgentCommentsController implements vscode.Disposable {
     if (event.kind === 'edit' && event.comment) {
       const rendered = this.threadsByFile.get(event.filePath)?.get(event.comment.id);
       if (rendered) {
-        this.updateThreadComment(rendered.thread, event.comment);
+        // Always fired by our own saveComment below — force the rebuild back to Preview regardless
+        // of the editing guard, since this event *is* the end of that edit.
+        this.updateThreadComment(rendered.thread, event.comment, { force: true });
         return;
       }
     }
@@ -436,10 +442,8 @@ export class AgentCommentsController implements vscode.Disposable {
       await this.cancelComment(comment);
       return;
     }
-    // Must clear before persisting: the store write below fires an 'edit' StoreChangeEvent, and the
-    // resulting re-render (onStoreChanged's dedicated 'edit' branch) needs the editingCommentIds
-    // guard lifted to actually rebuild this comment in Preview mode.
-    this.editingCommentIds.delete(c.id);
+    // The store write below fires an 'edit' StoreChangeEvent; onStoreChanged's 'edit' branch
+    // rebuilds this thread with force:true, which lifts the editingCommentIds guard itself.
     const filePath = toWorkspaceRelativePath(c.parent.uri);
     const saved = await this.store.updateCommentText(filePath, c.id, newText);
     if (!saved) {
@@ -458,18 +462,16 @@ export class AgentCommentsController implements vscode.Disposable {
       vscode.window.showWarningMessage('Agentic Comments: use the Cancel button on a comment.');
       return;
     }
-    // Must clear before rebuilding, same reason as saveComment — otherwise the editingCommentIds
-    // guard blocks the very rebuild this method depends on to restore Preview mode.
-    this.editingCommentIds.delete(c.id);
     // Store was never touched, so the live comment (if it's still there — it may have been resolved
     // or deleted concurrently, in which case that event already updated/disposed this thread and
-    // there's nothing further to do here) still holds the original text; rebuild just this one thread
-    // from it rather than re-rendering the whole document.
+    // already cleared the editing guard) still holds the original text; rebuild just this one thread
+    // from it, with force:true to lift the editing guard ourselves, rather than re-rendering the
+    // whole document.
     const filePath = toWorkspaceRelativePath(c.parent.uri);
     const data = await this.store.loadFile(filePath);
     const stored = data.comments.find((sc) => sc.id === c.id);
     if (stored) {
-      this.updateThreadComment(c.parent, stored);
+      this.updateThreadComment(c.parent, stored, { force: true });
     }
   }
 

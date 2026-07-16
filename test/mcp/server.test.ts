@@ -142,7 +142,7 @@ describe('list_unresolved_comments', () => {
   });
 
   it('omits originalContent on exact anchors when alwaysIncludeSnippet is disabled', async () => {
-    mockVscode.__setConfig('agentComments.mcp.alwaysIncludeSnippet', false);
+    mockVscode.__setConfig('agenticComments.mcp.alwaysIncludeSnippet', false);
     const { store, server, port } = await setupServer();
     activeServer = server;
     await writeSourceFile('a.ts', 'one\ntwo\nthree');
@@ -169,7 +169,7 @@ describe('list_unresolved_comments', () => {
   });
 
   it('truncates originalContent to the configured snippetMaxChars', async () => {
-    mockVscode.__setConfig('agentComments.mcp.snippetMaxChars', 4);
+    mockVscode.__setConfig('agenticComments.mcp.snippetMaxChars', 4);
     const { store, server, port } = await setupServer();
     activeServer = server;
     await writeSourceFile('a.ts', 'one\ntwo\nthree');
@@ -187,7 +187,7 @@ describe('list_unresolved_comments', () => {
   });
 
   it('omits originalContent entirely when snippetMaxChars is 0', async () => {
-    mockVscode.__setConfig('agentComments.mcp.snippetMaxChars', 0);
+    mockVscode.__setConfig('agenticComments.mcp.snippetMaxChars', 0);
     const { store, server, port } = await setupServer();
     activeServer = server;
     await writeSourceFile('a.ts', 'one\ntwo\nthree');

@@ -40,7 +40,7 @@ interface SnippetConfig {
 /** Read once per tool call, not once per comment — `getConfiguration` is cheap but there's no
  * reason to re-read it N times for one response. */
 function getSnippetConfig(): SnippetConfig {
-  const config = vscode.workspace.getConfiguration('agentComments');
+  const config = vscode.workspace.getConfiguration('agenticComments');
   return {
     always: config.get<boolean>('mcp.alwaysIncludeSnippet', true),
     maxChars: config.get<number>('mcp.snippetMaxChars', 500),
@@ -160,8 +160,6 @@ export class AgentCommentsMcpServer implements vscode.Disposable {
         description:
           'Lists unresolved review comments, grouped by file. Omit "file" to list across the whole workspace. ' +
           '"locationUncertain: true" means the code nearby changed and the line number may be off. ' +
-          '"originalContent" shows the code the comment was originally about — present on every comment by default ' +
-          '(configurable via settings), or only when locationUncertain if that default is turned off. ' +
           'Use when the user/agent asks you to see comments they left you',
         inputSchema: {
           file: z.string().optional().describe('Workspace-relative file path. Omit for the whole workspace.'),
@@ -196,9 +194,7 @@ export class AgentCommentsMcpServer implements vscode.Disposable {
         title: 'Get comments for files (bulk)',
         description:
           'Gets all comments for one or more files, grouped by file, optionally including resolved ones. ' +
-          'A "status": "resolved" entry means resolved; "resolvedBy" comes with it. ' +
-          '"originalContent" shows the code the comment was originally about — present on every comment by default ' +
-          '(configurable via settings), or only when locationUncertain if that default is turned off. ' +
+          '"locationUncertain: true" means the code nearby changed and the line number may be off. ' +
           'Use when the user/agent asks you to see comments they left you at a specific file',
         inputSchema: {
           files: z.array(z.string()).min(1).describe('Workspace-relative file paths.'),

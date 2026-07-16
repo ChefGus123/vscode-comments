@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { CommentStore } from '../storage/store';
-import { truncateSnippet, UI_SNIPPET_MAX_CHARS } from '../anchoring/snippet';
+import { formatOriginalSnippet, UI_SNIPPET_MAX_CHARS } from '../anchoring/snippet';
 import { ToolCommentView } from '../types';
 
 type Node = FileNode | CommentNode;
@@ -64,8 +64,7 @@ export class AgentCommentsTreeProvider implements vscode.TreeDataProvider<Node> 
     item.description = descriptionParts.join(' · ');
     let tooltipValue = `**${comment.author.type === 'user' ? 'You' : 'Agent'}** (${comment.anchorStatus})\n\n${comment.text}`;
     if (comment.anchorStatus !== 'exact' && comment.originalContent) {
-      const snippet = truncateSnippet(comment.originalContent, UI_SNIPPET_MAX_CHARS);
-      tooltipValue += `\n\n---\n*Originally:*\n\`\`\`\n${snippet}\n\`\`\``;
+      tooltipValue += formatOriginalSnippet(comment.originalContent, UI_SNIPPET_MAX_CHARS);
     }
     item.tooltip = new vscode.MarkdownString(tooltipValue);
     if (comment.status === 'resolved') {

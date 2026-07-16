@@ -54,8 +54,8 @@ Every response flags comments whose anchor isn't exact (`locationUncertain: true
 
 | Setting | Default | What it does |
 |---|---|---|
-| `agentComments.mcp.alwaysIncludeSnippet` | `true` (experimental) | Include `originalContent` on every MCP comment response, not just ones with an uncertain anchor location. Turn off to only include it when `locationUncertain` is true. |
-| `agentComments.mcp.snippetMaxChars` | `500` | Maximum characters of `originalContent` before truncation. `0` omits the snippet entirely. |
+| `agenticComments.mcp.alwaysIncludeSnippet` | `true` (experimental) | Include `originalContent` on every MCP comment response, not just ones with an uncertain anchor location. Turn off to only include it when `locationUncertain` is true. |
+| `agenticComments.mcp.snippetMaxChars` | `500` | Maximum characters of `originalContent` before truncation. `0` omits the snippet entirely. |
 
 ## Release Notes
 
