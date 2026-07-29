@@ -4,12 +4,16 @@ import { AgentCommentsController } from '../../src/comments/controller';
 import { createAnchor } from '../../src/anchoring/anchor';
 import { createTextDocument } from '../__mocks__/vscode';
 
-const mockVscode = vscode as unknown as { __reset(): void; _emitters: Record<string, { fire: (e: unknown) => void }> };
+const mockVscode = vscode as unknown as {
+  __reset(): void;
+  __setConfig(key: string, value: unknown): void;
+  _emitters: Record<string, { fire: (e: unknown) => void }>;
+};
 const storageUri = vscode.Uri.file('/storage');
 const repoUri = vscode.Uri.file('/repo');
 const extensionUri = vscode.Uri.file('/ext');
 
-async function flush(times = 8): Promise<void> {
+async function flush(times = 20): Promise<void> {
   for (let i = 0; i < times; i++) {
     await Promise.resolve();
   }
@@ -21,11 +25,18 @@ async function writeSourceFile(relativePath: string, content: string): Promise<v
   return uri;
 }
 
+// setup() controllers keep subscribing to the shared mock event emitters for the rest of the test
+// file unless disposed — __reset() clears state but doesn't touch listeners, so every test's
+// controller would otherwise stay live and react to later tests' events. Tracked here and disposed
+// in the shared afterEach so each test starts with a clean slate.
+const controllersToDispose: AgentCommentsController[] = [];
+
 async function setup() {
   vscode.workspace.workspaceFolders = [{ uri: repoUri, name: 'repo', index: 0 }];
   const store = new CommentStore(storageUri);
   await store.initialize();
   const controller = new AgentCommentsController(store, extensionUri);
+  controllersToDispose.push(controller);
   await flush();
   const createControllerMock = vscode.comments.createCommentController as jest.Mock;
   const commentController = createControllerMock.mock.results[createControllerMock.mock.results.length - 1].value;
@@ -33,6 +44,10 @@ async function setup() {
 }
 
 afterEach(() => {
+  for (const controller of controllersToDispose) {
+    controller.dispose();
+  }
+  controllersToDispose.length = 0;
   mockVscode.__reset();
   jest.restoreAllMocks();
   jest.useRealTimers();
@@ -238,7 +253,38 @@ describe('onStoreChanged', () => {
     expect(thread.dispose).toHaveBeenCalled();
   });
 
-  it('updates the rendered thread in place on a resolve event without disposing it', async () => {
+  it('disposes and forgets the thread on a resolve event by default (hideResolvedComments: true)', async () => {
+    const { store, commentController } = await setup();
+    const uri = await writeSourceFile('a.ts', 'one\ntwo');
+    const created = await store.addComment('a.ts', { lineHint: 1, endLineHint: 1, contentHash: 'h', contextBefore: '', contextAfter: 'two', status: 'exact' }, 'hi', { type: 'user' });
+    await vscode.workspace.openTextDocument(uri);
+    await flush();
+    const thread = commentController.createCommentThread.mock.results[0].value;
+
+    await store.resolveComment('a.ts', created.id, { type: 'agent' });
+    await flush();
+    expect(thread.dispose).toHaveBeenCalled();
+  });
+
+  it('a resolve event on an in-progress edit disposes the thread and clears the editing guard by default', async () => {
+    const { store, controller, commentController } = await setup();
+    const uri = await writeSourceFile('a.ts', 'one\ntwo');
+    const created = await store.addComment('a.ts', { lineHint: 1, endLineHint: 1, contentHash: 'h', contextBefore: '', contextAfter: 'two', status: 'exact' }, 'hi', { type: 'user' });
+    await vscode.workspace.openTextDocument(uri);
+    await flush();
+    const thread = commentController.createCommentThread.mock.results[0].value;
+    const comment = thread.comments[0];
+    controller.editComment(comment);
+
+    await store.resolveComment('a.ts', created.id, { type: 'agent' });
+    await flush();
+
+    expect(thread.dispose).toHaveBeenCalled();
+    expect((controller as any).editingCommentIds.has(created.id)).toBe(false);
+  });
+
+  it('updates the rendered thread in place on a resolve event without disposing it when hideResolvedComments is false', async () => {
+    mockVscode.__setConfig('agenticComments.editor.hideResolvedComments', false);
     const { store, commentController } = await setup();
     const uri = await writeSourceFile('a.ts', 'one\ntwo');
     const created = await store.addComment('a.ts', { lineHint: 1, endLineHint: 1, contentHash: 'h', contextBefore: '', contextAfter: 'two', status: 'exact' }, 'hi', { type: 'user' });
@@ -253,7 +299,8 @@ describe('onStoreChanged', () => {
     expect(thread.comments[0].label).toBe('resolved by agent');
   });
 
-  it('a resolve event overrides an in-progress edit, resetting the comment back to Preview mode instead of leaving it stuck', async () => {
+  it('a resolve event overrides an in-progress edit, resetting the comment back to Preview mode instead of leaving it stuck, when hideResolvedComments is false', async () => {
+    mockVscode.__setConfig('agenticComments.editor.hideResolvedComments', false);
     const { store, controller, commentController } = await setup();
     const uri = await writeSourceFile('a.ts', 'one\ntwo');
     const created = await store.addComment('a.ts', { lineHint: 1, endLineHint: 1, contentHash: 'h', contextBefore: '', contextAfter: 'two', status: 'exact' }, 'hi', { type: 'user' });
@@ -270,6 +317,32 @@ describe('onStoreChanged', () => {
     expect(thread.comments[0].mode).toBe(vscode.CommentMode.Preview);
     expect(thread.comments[0].label).toBe('resolved by agent');
     expect((controller as any).editingCommentIds.has(created.id)).toBe(false);
+  });
+
+  it('re-renders visible documents when hideResolvedComments is toggled live, showing/hiding resolved threads accordingly', async () => {
+    const { store, commentController } = await setup();
+    const uri = await writeSourceFile('a.ts', 'one\ntwo');
+    const created = await store.addComment('a.ts', { lineHint: 1, endLineHint: 1, contentHash: 'h', contextBefore: '', contextAfter: 'two', status: 'exact' }, 'hi', { type: 'user' });
+    // The config-toggle re-render only eagerly reaches visible editors (background tabs catch up
+    // lazily via onDidChangeVisibleTextEditors instead), so this needs a real visible editor, not
+    // just an open document.
+    await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri));
+    await flush();
+    const thread = commentController.createCommentThread.mock.results[0].value;
+
+    await store.resolveComment('a.ts', created.id, { type: 'agent' });
+    await flush();
+    expect(thread.dispose).toHaveBeenCalled();
+
+    mockVscode.__setConfig('agenticComments.editor.hideResolvedComments', false);
+    await flush();
+    expect(commentController.createCommentThread).toHaveBeenCalledTimes(2);
+    const reshownThread = commentController.createCommentThread.mock.results[1].value;
+    expect(reshownThread.contextValue).toBe('resolved');
+
+    mockVscode.__setConfig('agenticComments.editor.hideResolvedComments', true);
+    await flush();
+    expect(reshownThread.dispose).toHaveBeenCalled();
   });
 
   it('handles a resolve event for a file with no rendered thread by falling through to the default path', async () => {
@@ -330,6 +403,52 @@ describe('onStoreChanged', () => {
     expect(staleThread.dispose).toHaveBeenCalled();
     expect((controller as any).threadsByFile.get('a.ts').has('ghost-id')).toBe(false);
     void store;
+  });
+});
+
+describe('render/mutation queue race safety', () => {
+  it('does not resurrect a thread deleted by a concurrent delete while a render is in flight for the same file', async () => {
+    const { store, controller, commentController } = await setup();
+    const uri = await writeSourceFile('a.ts', 'one\ntwo');
+    const created = await store.addComment('a.ts', { lineHint: 1, endLineHint: 1, contentHash: 'h', contextBefore: '', contextAfter: 'two', status: 'exact' }, 'hi', { type: 'user' });
+    const doc = await vscode.workspace.openTextDocument(uri);
+    await flush();
+    expect(commentController.createCommentThread).toHaveBeenCalledTimes(1);
+
+    // Stall a render right after it captures the live comment list, returning a snapshot (not the
+    // shared cached array) so this render's captured list can't see an in-place mutation a
+    // concurrent delete makes afterward — reproducing the real vulnerability, where the awaited
+    // archive fetch builds its own independent array rather than sharing the cache's mutations.
+    let release: () => void = () => {};
+    const stall = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const originalLoadFile = store.loadFile.bind(store);
+    jest.spyOn(store, 'loadFile').mockImplementationOnce(async (filePath: string) => {
+      const data = await originalLoadFile(filePath);
+      await stall;
+      return { ...data, comments: [...data.comments] };
+    });
+
+    // Kick off a render that stalls mid-flight — simulating one already in progress (e.g. a tab
+    // switch) when the comment gets deleted underneath it.
+    const renderPromise = (controller as any).renderDocument(doc);
+    await flush();
+
+    await store.deleteComment('a.ts', created.id);
+    await flush();
+
+    release();
+    await renderPromise;
+    await flush();
+
+    // Before the fix: the stalled render's stale (pre-delete) comment list would still include the
+    // deleted comment, and since the delete handler ran unqueued and had already disposed the
+    // thread, syncThreads would find the id missing from `existing` and create a resurrected
+    // thread for a comment that no longer exists. With the fix, the delete handler and the render
+    // are serialized on the same per-file queue, so the render only ever runs relative to a
+    // threadsByFile state that already reflects the delete.
+    expect(commentController.createCommentThread).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -429,6 +548,68 @@ describe('onDocumentChanged debounce + reanchorAfterChange', () => {
 
     const data = await store.loadFile('shift.ts');
     expect(data.comments[0].anchor.status).toBe('approximate');
+  });
+
+  it('reanchors a resolved comment shown via hideResolvedComments: false when an edit shifts its line', async () => {
+    mockVscode.__setConfig('agenticComments.editor.hideResolvedComments', false);
+    const { store, controller } = await setup();
+    const lines = ['zero', 'one', 'two', 'target', 'four'];
+    const uri = await writeSourceFile('shift.ts', lines.join('\n'));
+    const anchor = createAnchor(createTextDocument(uri, lines.join('\n')) as any, 3, 3); // exact match on 'target'
+    const created = await store.addComment('shift.ts', anchor, 'hi', { type: 'user' });
+    await store.resolveComment('shift.ts', created.id, { type: 'user' });
+    const doc = await vscode.workspace.openTextDocument(uri);
+    await flush();
+    // The initial render (which now also reanchors the archive on first open) is queued behind
+    // whatever onDidOpenTextDocument already triggered — explicitly awaiting it here, rather than
+    // just flushing a fixed number of microtask rounds, guarantees the thread actually exists
+    // before firing the edit below (onDocumentChanged's "nothing rendered yet" gate would otherwise
+    // skip scheduling the reanchor entirely if it ran too early).
+    await (controller as any).renderDocument(doc);
+    expect((await store.getArchivedComments('shift.ts'))[0].anchor.lineHint).toBe(4);
+
+    // Insert a line well above the comment's own line — a pure shift, not an overlapping edit.
+    (doc as any).__setText(['NEW', ...lines].join('\n'));
+    mockVscode._emitters.didChangeTextDocument.fire({
+      document: doc,
+      contentChanges: [{ range: new vscode.Range(0, 0, 0, 0), text: 'NEW\n' }],
+    });
+    await jest.advanceTimersByTimeAsync(1000);
+
+    // Before this fix, a shown-but-resolved comment's anchor was never updated by edits, so it
+    // would still report lineHint 4 here instead of tracking the insertion.
+    expect((await store.getArchivedComments('shift.ts'))[0].anchor.lineHint).toBe(5);
+  });
+
+  it('fully reanchors the archive when hideResolvedComments is toggled on for an already-open file, catching drift accumulated while hidden', async () => {
+    // Starts hidden (default) — the file's first-open pass runs while nothing shows the archive.
+    const { store, controller } = await setup();
+    const lines = ['zero', 'one', 'two', 'target', 'four'];
+    const uri = await writeSourceFile('shift.ts', lines.join('\n'));
+    const anchor = createAnchor(createTextDocument(uri, lines.join('\n')) as any, 3, 3); // exact match on 'target'
+    const created = await store.addComment('shift.ts', anchor, 'hi', { type: 'user' });
+    await store.resolveComment('shift.ts', created.id, { type: 'user' });
+    const doc = await vscode.workspace.openTextDocument(uri);
+    await vscode.window.showTextDocument(doc);
+    await (controller as any).renderDocument(doc);
+
+    // Edit while still hidden — reanchorAfterChange deliberately skips the archive here since
+    // nothing renders it, so the stored anchor goes stale on purpose.
+    (doc as any).__setText(['NEW', ...lines].join('\n'));
+    mockVscode._emitters.didChangeTextDocument.fire({
+      document: doc,
+      contentChanges: [{ range: new vscode.Range(0, 0, 0, 0), text: 'NEW\n' }],
+    });
+    await jest.advanceTimersByTimeAsync(1000);
+    expect((await store.getArchivedComments('shift.ts'))[0].anchor.lineHint).toBe(4); // still stale
+
+    // Show resolved comments without closing the tab. Before the fix, the archive's one-time full
+    // reanchor was nested inside reanchoredOnOpen — already consumed by the first (hidden) open —
+    // so it would never run again for this file and the comment would stay stuck at line 4 forever.
+    mockVscode.__setConfig('agenticComments.editor.hideResolvedComments', false);
+    await (controller as any).renderDocument(doc);
+
+    expect((await store.getArchivedComments('shift.ts'))[0].anchor.lineHint).toBe(5);
   });
 
   it('debounces rapid edits and reanchors comments once after the quiet period', async () => {

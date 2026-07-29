@@ -23,10 +23,51 @@ function labelFor(status: AnchorStatus): string | undefined {
   return undefined;
 }
 
+function applyAnchorUpdate(comment: StoredComment, updated: ReturnType<typeof reanchor>): boolean {
+  if (
+    updated.lineHint !== comment.anchor.lineHint ||
+    updated.endLineHint !== comment.anchor.endLineHint ||
+    updated.status !== comment.anchor.status
+  ) {
+    comment.anchor = updated;
+    comment.updatedAt = new Date().toISOString();
+    return true;
+  }
+  return false;
+}
+
+/** Full re-scan of every comment's anchor against the document's current contents — used on first
+ * open, where there's no content-change event to derive a cheaper shift from. */
+function applyFullReanchor(comments: StoredComment[], document: vscode.TextDocument): boolean {
+  let changed = false;
+  for (const comment of comments) {
+    if (applyAnchorUpdate(comment, reanchor(document, comment.anchor))) {
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+/** Incremental reanchor against a specific set of content changes — tries the cheap line-shift
+ * first, falling back to a full re-scan only if the edit overlaps the anchor's own lines. */
+function applyIncrementalReanchor(
+  comments: StoredComment[],
+  document: vscode.TextDocument,
+  changes: readonly vscode.TextDocumentContentChangeEvent[]
+): boolean {
+  let changed = false;
+  for (const comment of comments) {
+    const shifted = shiftAnchorForChanges(comment.anchor, changes);
+    if (applyAnchorUpdate(comment, shifted ?? reanchor(document, comment.anchor))) {
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 interface RenderedThread {
   thread: vscode.CommentThread;
   commentId: string;
-  status: StoredComment['status'];
 }
 
 /** Rendered `vscode.Comment` with extra fields the base interface doesn't provide: `contextValue`
@@ -45,11 +86,25 @@ export class AgentCommentsController implements vscode.Disposable {
   private readonly threadsByFile = new Map<string, Map<string, RenderedThread>>();
   private readonly debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly reanchoredOnOpen = new Set<string>();
+  /** Tracks, separately from `reanchoredOnOpen`, whether a file's archive has had its one-time full
+   * reanchor since it started being shown. Decoupled because `reanchoredOnOpen` is a per-document-
+   * open-lifetime flag: a file opened while hideResolvedComments was on (skipping the archive pass
+   * entirely) and later toggled off *without closing the tab* would otherwise never get one, since
+   * the outer gate is already permanently set. Cleared on every config change to that setting (both
+   * directions) so drift accumulated while hidden is always caught the next time comments are shown. */
+  private readonly archiveReanchoredWhileShown = new Set<string>();
   /** Comment ids currently in the gutter's editable textarea. Re-renders (onDidChangeVisibleTextEditors,
    * onStoreChanged, etc.) fire independently of that in-progress edit and must not rebuild these comments
    * via toVscodeComment — that would stomp CommentMode.Editing back to Preview mid-edit. */
   private readonly editingCommentIds = new Set<string>();
   private pendingDraftThread: vscode.CommentThread | undefined;
+  /** Serializes render/mutation work per file so an in-flight `renderDocument` (which awaits real
+   * disk I/O when showing archived comments) can't race the delete/resolve/edit handling in
+   * `onStoreChanged` — without this, a render that captured pre-event data could resurrect a thread
+   * those had just disposed or updated. Scoped to those two call sites specifically; `evictIfHidden`
+   * and onStoreChanged's own generic fallback still mutate `threadsByFile` outside this queue (a
+   * pre-existing gap, not one this queue was built to close). */
+  private readonly fileQueues = new Map<string, Promise<void>>();
 
   constructor(private readonly store: CommentStore, private readonly extensionUri: vscode.Uri) {
     this.controller = vscode.comments.createCommentController('agentComments', 'Agentic Comments');
@@ -72,7 +127,19 @@ export class AgentCommentsController implements vscode.Disposable {
       }),
       vscode.workspace.onDidChangeTextDocument((e) => this.onDocumentChanged(e)),
       vscode.workspace.onDidCloseTextDocument((doc) => this.evictIfHidden(doc)),
-      store.onDidChangeFile((event) => this.onStoreChanged(event))
+      store.onDidChangeFile((event) => this.onStoreChanged(event)),
+      vscode.workspace.onDidChangeConfiguration((e) => {
+        if (e.affectsConfiguration('agenticComments.editor.hideResolvedComments')) {
+          // Any file shown before this change may have drifted while hidden (edits aren't tracked
+          // against the archive while nothing renders it) — force a fresh full reanchor next time.
+          this.archiveReanchoredWhileShown.clear();
+          // Only visible editors need an eager re-render — a background tab picks up the current
+          // setting anyway the next time it becomes visible, via onDidChangeVisibleTextEditors.
+          for (const editor of vscode.window.visibleTextEditors) {
+            void this.renderDocument(editor.document);
+          }
+        }
+      })
     );
 
     for (const document of vscode.workspace.textDocuments) {
@@ -86,6 +153,29 @@ export class AgentCommentsController implements vscode.Disposable {
     );
   }
 
+  /** Chains `task` after whatever's currently queued for `filePath`, so renders and direct
+   * `threadsByFile` mutations for the same file always run one at a time, in the order they were
+   * triggered — mirrors `CommentStore.queueWrite`'s per-file serialization. */
+  private enqueue(filePath: string, task: () => void | Promise<void>): Promise<void> {
+    const prior = this.fileQueues.get(filePath) ?? Promise.resolve();
+    const next = prior.then(task, task);
+    // Swallowed here so one failing task can't permanently wedge the queue for this file (matching
+    // CommentStore.queueWrite) — but every current caller fires this with `void`, so without
+    // logging here a thrown error would vanish with no trace anywhere, unlike before this queue
+    // existed, when the same disposal logic ran inline and a throw would have surfaced via VS
+    // Code's own listener-error logging.
+    const settled = next.catch((err) => {
+      console.error('Agentic Comments: error in queued render/mutation task for', filePath, err);
+    });
+    this.fileQueues.set(filePath, settled);
+    void settled.then(() => {
+      if (this.fileQueues.get(filePath) === settled) {
+        this.fileQueues.delete(filePath);
+      }
+    });
+    return next;
+  }
+
   dispose(): void {
     for (const timer of this.debounceTimers.values()) {
       clearTimeout(timer);
@@ -95,12 +185,15 @@ export class AgentCommentsController implements vscode.Disposable {
     }
   }
 
-  private async renderDocument(document: vscode.TextDocument): Promise<void> {
+  private renderDocument(document: vscode.TextDocument): Promise<void> {
     if (document.uri.scheme !== 'file') {
-      return;
+      return Promise.resolve();
     }
     const filePath = toWorkspaceRelativePath(document.uri);
+    return this.enqueue(filePath, () => this.renderDocumentNow(document, filePath));
+  }
 
+  private async renderDocumentNow(document: vscode.TextDocument, filePath: string): Promise<void> {
     // First time this file is opened in this session: re-validate anchors against the file's
     // current contents in case it was edited out-of-band (terminal/agent) while unopened —
     // onDidChangeTextDocument can't have told us since no editor was watching it (§4.1).
@@ -108,26 +201,33 @@ export class AgentCommentsController implements vscode.Disposable {
       this.reanchoredOnOpen.add(filePath);
       // reanchorIfFileChanged short-circuits via a whole-file hash when nothing changed while the
       // file was closed, so this only pays the per-comment window-scan cost when something did.
-      await this.store.reanchorIfFileChanged(filePath, document.getText(), (comments) => {
-        let changed = false;
-        for (const comment of comments) {
-          const updated = reanchor(document, comment.anchor);
-          if (
-            updated.lineHint !== comment.anchor.lineHint ||
-            updated.endLineHint !== comment.anchor.endLineHint ||
-            updated.status !== comment.anchor.status
-          ) {
-            comment.anchor = updated;
-            comment.updatedAt = new Date().toISOString();
-            changed = true;
-          }
-        }
-        return changed;
-      });
+      await this.store.reanchorIfFileChanged(filePath, document.getText(), (comments) =>
+        applyFullReanchor(comments, document)
+      );
+    }
+    // Deliberately its own gate, not folded into the one above: a file can reach here with
+    // reanchoredOnOpen already set (opened while hidden, then shown later without closing the tab)
+    // — archived comments are only reachable here at all when the setting is off, and there's no
+    // per-file "last checked" hash for the archive the way reanchorIfFileChanged has for live
+    // comments, so a one-time full reanchor per hidden→shown transition is the cheapest correct
+    // option (archiveReanchoredWhileShown is cleared on every config change to this setting).
+    if (!this.hideResolvedComments() && !this.archiveReanchoredWhileShown.has(filePath)) {
+      this.archiveReanchoredWhileShown.add(filePath);
+      await this.store.reanchorArchive(filePath, (comments) => applyFullReanchor(comments, document));
     }
 
     const data = await this.store.loadFile(filePath);
-    this.syncThreads(document, filePath, data.comments);
+    const comments = this.hideResolvedComments()
+      ? data.comments
+      : [...data.comments, ...(await this.store.getArchivedComments(filePath))];
+    this.syncThreads(document, filePath, comments);
+  }
+
+  /** agenticComments.editor.hideResolvedComments — default true. When on, resolved comments are
+   * dropped from the gutter/editor as soon as they're resolved (still reachable via the sidebar);
+   * when off, they render alongside live comments, sourced from the archive on every re-render. */
+  private hideResolvedComments(): boolean {
+    return vscode.workspace.getConfiguration('agenticComments').get<boolean>('editor.hideResolvedComments', true);
   }
 
   private syncThreads(document: vscode.TextDocument, filePath: string, comments: StoredComment[]): void {
@@ -147,7 +247,6 @@ export class AgentCommentsController implements vscode.Disposable {
       const range = new vscode.Range(rangeStart, 0, rangeEnd, 0);
       if (rendered) {
         rendered.thread.range = range;
-        rendered.status = comment.status;
         this.updateThreadComment(rendered.thread, comment);
       } else {
         const vsComment = this.toVscodeComment(comment);
@@ -156,14 +255,15 @@ export class AgentCommentsController implements vscode.Disposable {
         thread.canReply = false;
         thread.contextValue = comment.status;
         thread.label = labelFor(comment.anchor.status);
-        existing.set(comment.id, { thread, commentId: comment.id, status: comment.status });
+        existing.set(comment.id, { thread, commentId: comment.id });
       }
     }
 
-    // Resolved threads are kept visible (with a Reopen action) for the rest of this session even
-    // though they've already moved out of the live JSON into the archive — see §7/§3.2.
+    // `comments` already reflects agenticComments.editor.hideResolvedComments (renderDocument
+    // decides whether archived/resolved comments are included), so anything no longer seen here
+    // has genuinely fallen out of what should be rendered — evict it.
     for (const [id, rendered] of existing) {
-      if (!seen.has(id) && rendered.status !== 'resolved') {
+      if (!seen.has(id)) {
         rendered.thread.dispose();
         existing.delete(id);
         this.editingCommentIds.delete(id);
@@ -227,39 +327,58 @@ export class AgentCommentsController implements vscode.Disposable {
       return;
     }
 
+    // 'delete'/'resolve'(shown)/'edit' below mutate an existing rendered thread directly rather
+    // than going through a full renderDocument, but that mutation is queued on the same per-file
+    // queue as renderDocument (enqueue) so it can't race an in-flight render for the same file —
+    // without that, a render that captured pre-event data could resurrect a thread this had just
+    // disposed, or clobber an in-place update with stale data once the render finally resolves.
+
     if (event.kind === 'delete' && event.comment) {
-      const threads = this.threadsByFile.get(event.filePath);
-      const rendered = threads?.get(event.comment.id);
-      if (rendered) {
-        rendered.thread.dispose();
-        threads?.delete(event.comment.id);
-        this.editingCommentIds.delete(event.comment.id);
-      }
+      const comment = event.comment;
+      void this.enqueue(event.filePath, () => {
+        const threads = this.threadsByFile.get(event.filePath);
+        const rendered = threads?.get(comment.id);
+        if (rendered) {
+          rendered.thread.dispose();
+          threads?.delete(comment.id);
+          this.editingCommentIds.delete(comment.id);
+        }
+      });
       return;
     }
 
     if (event.kind === 'resolve' && event.comment) {
-      const rendered = this.threadsByFile.get(event.filePath)?.get(event.comment.id);
-      if (rendered) {
-        rendered.status = 'resolved';
-        rendered.thread.contextValue = 'resolved';
-        // A resolve overrides any in-progress edit rather than deferring to it — once resolved, the
-        // comment leaves the live JSON for good (until reopened), so nothing will ever revisit this
-        // thread to apply a deferred rebuild. force:true lets it through immediately instead of
-        // leaving the textarea stuck open with stale content for the rest of the session.
-        this.updateThreadComment(rendered.thread, event.comment, { force: true });
+      const comment = event.comment;
+      if (this.threadsByFile.get(event.filePath)?.has(comment.id) && !this.hideResolvedComments()) {
+        void this.enqueue(event.filePath, () => {
+          const rendered = this.threadsByFile.get(event.filePath)?.get(comment.id);
+          if (rendered) {
+            rendered.thread.contextValue = 'resolved';
+            // A resolve overrides any in-progress edit rather than deferring to it — once resolved,
+            // the comment leaves the live JSON for good (until reopened), so nothing will revisit
+            // this thread on its own to apply a deferred rebuild. force:true lets it through
+            // immediately instead of leaving the textarea stuck open with stale content.
+            this.updateThreadComment(rendered.thread, comment, { force: true });
+          }
+        });
         return;
       }
+      // hideResolvedComments() true, or no thread rendered yet: fall through to the generic
+      // renderDocument path below, which re-derives the comment list from disk (excluding this one)
+      // and evicts it via syncThreads' own eviction loop — exactly how 'reopen' is already handled.
     }
 
     if (event.kind === 'edit' && event.comment) {
-      const rendered = this.threadsByFile.get(event.filePath)?.get(event.comment.id);
-      if (rendered) {
-        // Always fired by our own saveComment below — force the rebuild back to Preview regardless
-        // of the editing guard, since this event *is* the end of that edit.
-        this.updateThreadComment(rendered.thread, event.comment, { force: true });
-        return;
-      }
+      const comment = event.comment;
+      void this.enqueue(event.filePath, () => {
+        const rendered = this.threadsByFile.get(event.filePath)?.get(comment.id);
+        if (rendered) {
+          // Always fired by our own saveComment below — force the rebuild back to Preview regardless
+          // of the editing guard, since this event *is* the end of that edit.
+          this.updateThreadComment(rendered.thread, comment, { force: true });
+        }
+      });
+      return;
     }
 
     const document = this.findOpenDocument(event.filePath);
@@ -296,6 +415,7 @@ export class AgentCommentsController implements vscode.Disposable {
       this.threadsByFile.delete(filePath);
     }
     this.reanchoredOnOpen.delete(filePath);
+    this.archiveReanchoredWhileShown.delete(filePath);
   }
 
   private onDocumentChanged(e: vscode.TextDocumentChangeEvent): void {
@@ -327,23 +447,12 @@ export class AgentCommentsController implements vscode.Disposable {
     filePath: string,
     changes: readonly vscode.TextDocumentContentChangeEvent[]
   ): Promise<void> {
-    await this.store.updateAnchors(filePath, (comments) => {
-      let changed = false;
-      for (const comment of comments) {
-        const shifted = shiftAnchorForChanges(comment.anchor, changes);
-        const anchor = shifted ?? reanchor(document, comment.anchor);
-        if (
-          anchor.lineHint !== comment.anchor.lineHint ||
-          anchor.endLineHint !== comment.anchor.endLineHint ||
-          anchor.status !== comment.anchor.status
-        ) {
-          comment.anchor = anchor;
-          comment.updatedAt = new Date().toISOString();
-          changed = true;
-        }
-      }
-      return changed;
-    });
+    await this.store.updateAnchors(filePath, (comments) => applyIncrementalReanchor(comments, document, changes));
+    // Archived comments only need this when they're actually displayed (hideResolvedComments:
+    // false) — otherwise nothing renders their position and there's nothing to keep accurate.
+    if (!this.hideResolvedComments()) {
+      await this.store.reanchorArchive(filePath, (comments) => applyIncrementalReanchor(comments, document, changes));
+    }
   }
 
   async createComment(reply: vscode.CommentReply | undefined, authorType: AuthorType): Promise<void> {

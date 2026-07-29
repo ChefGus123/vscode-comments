@@ -54,10 +54,14 @@ Every response flags comments whose anchor isn't exact (`locationUncertain: true
 
 | Setting | Default | What it does |
 |---|---|---|
+| `agenticComments.editor.hideResolvedComments` | `true` | Hide resolved comments from the editor gutter to reduce clutter. They stay accessible from the sidebar with Show Resolved on. |
 | `agenticComments.mcp.alwaysIncludeSnippet` | `true` (experimental) | Include `originalContent` on every MCP comment response, not just ones with an uncertain anchor location. Turn off to only include it when `locationUncertain` is true. |
 | `agenticComments.mcp.snippetMaxChars` | `500` | Maximum characters of `originalContent` before truncation. `0` omits the snippet entirely. |
 
 ## Release Notes
+
+### 0.3.1
+- Resolved comments are now hidden from the editor gutter by default (still accessible from the sidebar) — new `agenticComments.editor.hideResolvedComments` setting.
 
 ### 0.3.0
 - Orphaned comments no longer drift to the wrong place on later edits — once orphaned, a comment's position is frozen for good.

@@ -200,7 +200,11 @@ On the MCP surface, the snippet is useful for more than orphan recovery — an a
 - Anchor confidence layered on top: dimmed icon for `approximate`, warning glyph for `orphaned`.
 - A resolved comment shows a `resolvedBy` tag (user/agent) in its label.
 
-**Resolved comments stay visible in-session.** Although a resolved comment is moved out of the live JSON into the archive on disk (§3), its rendered `CommentThread` is *not* disposed — it flips to a "resolved" visual state with a Reopen action, and stays that way for the rest of the editor session. This resolves an apparent tension between the storage model (resolved = archived, not loaded by default) and the desired UX (resolved comments shouldn't just vanish from the editor the moment you resolve them). On the next file open in a new session, only live (unresolved) comments render by default, consistent with the storage model.
+**Resolved comments in the gutter — `agenticComments.editor.hideResolvedComments` (default `true`).** A resolved comment always moves out of the live JSON into the archive on disk (§3), but what happens to its rendered `CommentThread` depends on this setting:
+- **Default (`true`):** the thread is disposed the moment it's resolved — resolved comments don't clutter the gutter. Still fully reachable from the sidebar (Show Resolved) and reopenable from there.
+- **`false`:** the thread flips to a "resolved" visual state with a Reopen action and stays visible, sourced from the archive on every re-render (`AgentCommentsController.renderDocument` merges live + archived comments when this is off) — matching the sidebar's own behavior. Toggling the setting re-syncs all open documents immediately, no reopen needed.
+
+Either way, on a fresh session a file's live comments load first as usual; whether resolved ones join them is decided by this setting at render time, not by anything persisted from the prior session.
 
 **Sidebar panel:** dedicated Activity Bar view, grouped by file.
 - Default: unresolved only, click-to-jump navigation (which also expands the thread if it was collapsed).
@@ -374,6 +378,7 @@ Still open / accepted:
 - Cross-machine or cross-clone comment sharing — not addressed, by design.
 - Manual "reconnect" UX for `file-not-found` comments — not designed in detail; the flag is surfaced, reconnection is currently a manual discard-and-recreate.
 - Interactive expand-to-full-snippet UI — deferred; the current UI truncates `originalContent` at a fixed cap with a truncation marker, no expand affordance.
+- Auto-focusing the comment input box on right-click "Add Comment" (to match the gutter "+" flow) — investigated and blocked: focusing a `CommentThread`'s input textarea (`focusCommentEditor()`) is a private method on VS Code's own internal comment-widget class, not a registered command and not exposed anywhere on the public `CommentThread`/`CommentController` API surface (confirmed against the installed `@types/vscode` and by inspecting the actual VS Code build). No public API exists for an extension to trigger it. Revisit only if VS Code adds one.
 
 ---
 

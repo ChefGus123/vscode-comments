@@ -2,7 +2,7 @@
   "name": "agentic-comments",
   "displayName": "Agentic Comments",
   "description": "Leave GitHub-style inline review comments on live code and expose them to AI coding agents via MCP.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "IlayAmir",
   "icon": "media/icon.png",
   "galleryBanner": {
@@ -281,6 +281,11 @@
     "configuration": {
       "title": "Agentic Comments",
       "properties": {
+        "agenticComments.editor.hideResolvedComments": {
+          "type": "boolean",
+          "default": true,
+          "description": "Hide resolved comments from the editor gutter to reduce clutter. They remain accessible from the Agentic Comments sidebar with Show Resolved on."
+        },
         "agenticComments.mcp.alwaysIncludeSnippet": {
           "type": "boolean",
           "default": true,
