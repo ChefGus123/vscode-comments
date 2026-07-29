@@ -76,6 +76,7 @@ export interface StoreChangeEvent {
 export class CommentStore {
   private readonly index = new Map<string, FileIndexEntry>();
   private readonly cache = new Map<string, FileCommentData>();
+  private readonly archiveCache = new Map<string, ArchivedComment[]>();
   private readonly writeQueues = new Map<string, Promise<unknown>>();
 
   private readonly onDidChangeEmitter = new vscode.EventEmitter<StoreChangeEvent>();
@@ -163,26 +164,97 @@ export class CommentStore {
     return data;
   }
 
-  /** Raw archived (resolved) records for a file, in on-disk order. Shared by `getComments` and
-   * `reopenComment` so the JSONL-parse logic lives in one place. */
-  private async readArchive(filePath: string): Promise<ArchivedComment[]> {
-    try {
-      const bytes = await vscode.workspace.fs.readFile(archiveFileUri(this.storageUri, filePath));
-      return Buffer.from(bytes)
-        .toString('utf8')
-        .split('\n')
-        .filter((l) => l.trim().length > 0)
-        .map((l) => JSON.parse(l) as ArchivedComment);
-    } catch {
-      return [];
+  private touchArchiveCache(filePath: string, data: ArchivedComment[]): void {
+    this.archiveCache.delete(filePath);
+    this.archiveCache.set(filePath, data);
+    if (this.archiveCache.size > CACHE_CAP) {
+      const oldest = this.archiveCache.keys().next().value;
+      if (oldest !== undefined) {
+        this.archiveCache.delete(oldest);
+      }
     }
   }
 
-  /** Archived (resolved) comments for a file in their native shape (full anchor, etc.) — for
-   * consumers that render comments the same way as live ones (unlike `getComments`, which flattens
-   * into the lighter MCP/tree-facing `ToolCommentView`). */
+  /** Raw archived (resolved) records for a file, in on-disk order — cached like `loadFile`, since
+   * the archive only changes via `resolveComment`/`reopenComment`/`writeArchive`, all of which
+   * invalidate this cache. Shared by every reader (`getComments`, `reopenComment`, `deleteComment`,
+   * `getArchivedComments`, `reanchorArchive`) so the JSONL-parse logic lives in one place.
+   *
+   * A malformed line (e.g. a partial write from a crash) is skipped rather than discarding the
+   * whole file — losing every resolved comment for one bad line would be a worse failure than
+   * losing just that one comment, and the user is warned once per read so it isn't silent. */
+  private async readArchive(filePath: string): Promise<ArchivedComment[]> {
+    const cached = this.archiveCache.get(filePath);
+    if (cached) {
+      this.touchArchiveCache(filePath, cached);
+      return cached;
+    }
+
+    let bytes: Uint8Array;
+    try {
+      bytes = await vscode.workspace.fs.readFile(archiveFileUri(this.storageUri, filePath));
+    } catch {
+      return []; // no archive yet — not an error, nothing to cache
+    }
+
+    const lines = Buffer.from(bytes)
+      .toString('utf8')
+      .split('\n')
+      .filter((l) => l.trim().length > 0);
+    const archived: ArchivedComment[] = [];
+    let corrupted = 0;
+    for (const line of lines) {
+      try {
+        archived.push(JSON.parse(line) as ArchivedComment);
+      } catch {
+        corrupted++;
+      }
+    }
+    if (corrupted > 0) {
+      vscode.window.showWarningMessage(
+        `Agentic Comments: ${corrupted} resolved comment(s) in ${filePath} could not be read (corrupted archive data) and were skipped.`
+      );
+    }
+    this.touchArchiveCache(filePath, archived);
+    return archived;
+  }
+
+  /** Overwrites a file's archive with `archived` (the full remaining set) and invalidates the cache
+   * so the next `readArchive` picks up the change. Shared by every writer (`reopenComment`,
+   * `deleteComment`, `reanchorArchive`) that rewrites the whole file — `resolveComment` appends a
+   * single record instead (see `appendJsonl`) and invalidates the cache itself. */
+  private async writeArchive(filePath: string, archived: ArchivedComment[]): Promise<void> {
+    await vscode.workspace.fs.writeFile(
+      archiveFileUri(this.storageUri, filePath),
+      Buffer.from(archived.map((c) => JSON.stringify(c)).join('\n') + (archived.length ? '\n' : ''), 'utf8')
+    );
+    this.archiveCache.delete(filePath);
+  }
+
+  /** Archived (resolved) comments for a file in the shape live comments use (full anchor, etc.) —
+   * for consumers that render comments the same way as live ones (unlike `getComments`, which
+   * flattens into the lighter MCP/tree-facing `ToolCommentView`). Strips the archive-only
+   * `filePath`/`archivedAt` bookkeeping fields so callers get a plain `StoredComment`, matching what
+   * `reopenComment` already does when it hands an archived record back to the live side. */
   async getArchivedComments(filePath: string): Promise<StoredComment[]> {
-    return this.readArchive(filePath);
+    const archived = await this.readArchive(filePath);
+    return archived.map(({ filePath: _filePath, archivedAt: _archivedAt, ...rest }) => rest);
+  }
+
+  /** Like `updateAnchors`, but for archived comments — used to keep a resolved comment's position
+   * accurate while it's still being shown (`agenticComments.editor.hideResolvedComments: false`) as
+   * the file is edited. Fires its own `'reanchor'` change event since, unlike `updateAnchors`, a
+   * file with only archived comments would otherwise never trigger one (nothing in `data.comments`
+   * to change). */
+  async reanchorArchive(filePath: string, updater: (comments: StoredComment[]) => boolean): Promise<void> {
+    return this.queueWrite(filePath, async () => {
+      const archived = await this.readArchive(filePath);
+      const changed = updater(archived);
+      if (changed) {
+        await this.writeArchive(filePath, archived);
+        this.onDidChangeEmitter.fire({ filePath, kind: 'reanchor' });
+      }
+    });
   }
 
   private async persist(data: FileCommentData, kind: StoreChangeKind, comment?: StoredComment): Promise<void> {
@@ -254,6 +326,7 @@ export class CommentStore {
         filePath,
         archivedAt: comment.updatedAt,
       } as ArchivedComment);
+      this.archiveCache.delete(filePath);
       await this.persist(data, 'resolve', comment);
       return comment;
     });
@@ -278,17 +351,13 @@ export class CommentStore {
 
   async reopenComment(filePath: string, id: string): Promise<StoredComment | undefined> {
     return this.queueWrite(filePath, async () => {
-      const archiveUri = archiveFileUri(this.storageUri, filePath);
       const archived = await this.readArchive(filePath);
       const idx = archived.findIndex((c) => c.id === id);
       if (idx === -1) {
         return undefined;
       }
       const [comment] = archived.splice(idx, 1);
-      await vscode.workspace.fs.writeFile(
-        archiveUri,
-        Buffer.from(archived.map((c) => JSON.stringify(c)).join('\n') + (archived.length ? '\n' : ''), 'utf8')
-      );
+      await this.writeArchive(filePath, archived);
 
       const { archivedAt: _archivedAt, filePath: _filePath, ...rest } = comment;
       const reopened: StoredComment = { ...rest, status: 'unresolved', resolvedBy: null, updatedAt: new Date().toISOString() };
@@ -310,27 +379,13 @@ export class CommentStore {
         return comment;
       }
 
-      const archiveUri = archiveFileUri(this.storageUri, filePath);
-      let archived: ArchivedComment[] = [];
-      try {
-        const bytes = await vscode.workspace.fs.readFile(archiveUri);
-        const text = Buffer.from(bytes).toString('utf8');
-        archived = text
-          .split('\n')
-          .filter((l) => l.trim().length > 0)
-          .map((l) => JSON.parse(l) as ArchivedComment);
-      } catch {
-        archived = [];
-      }
+      const archived = await this.readArchive(filePath);
       const archIdx = archived.findIndex((c) => c.id === id);
       if (archIdx === -1) {
         return undefined;
       }
       const [comment] = archived.splice(archIdx, 1);
-      await vscode.workspace.fs.writeFile(
-        archiveUri,
-        Buffer.from(archived.map((c) => JSON.stringify(c)).join('\n') + (archived.length ? '\n' : ''), 'utf8')
-      );
+      await this.writeArchive(filePath, archived);
       this.onDidChangeEmitter.fire({ filePath, kind: 'delete', comment });
       return comment;
     });

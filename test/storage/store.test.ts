@@ -514,6 +514,114 @@ describe('getComments', () => {
   });
 });
 
+describe('getArchivedComments', () => {
+  it('returns archived comments in the live StoredComment shape, stripping filePath/archivedAt', async () => {
+    const store = new CommentStore(storageUri);
+    await store.initialize();
+    await markSourceFileExists('a.ts');
+    const created = await store.addComment('a.ts', makeAnchor({ lineHint: 3, endLineHint: 3 }), 'hello', author);
+    await store.resolveComment('a.ts', created.id, agent);
+
+    const archived = await store.getArchivedComments('a.ts');
+    expect(archived).toHaveLength(1);
+    expect(archived[0].id).toBe(created.id);
+    expect(archived[0].anchor.lineHint).toBe(3);
+    expect(archived[0].status).toBe('resolved');
+    expect(archived[0]).not.toHaveProperty('filePath');
+    expect(archived[0]).not.toHaveProperty('archivedAt');
+  });
+
+  it('returns an empty array when the file has no archive yet', async () => {
+    const store = new CommentStore(storageUri);
+    await store.initialize();
+    const archived = await store.getArchivedComments('never-resolved.ts');
+    expect(archived).toEqual([]);
+  });
+
+  it('caches archive reads and only hits disk once across repeated calls, invalidating on the next write', async () => {
+    const store = new CommentStore(storageUri);
+    await store.initialize();
+    await markSourceFileExists('a.ts');
+    const created = await store.addComment('a.ts', makeAnchor(), 'hello', author);
+    await store.resolveComment('a.ts', created.id, author);
+
+    const readSpy = jest.spyOn(vscode.workspace.fs, 'readFile');
+    readSpy.mockClear();
+    await store.getArchivedComments('a.ts');
+    await store.getArchivedComments('a.ts');
+    // resolveComment invalidates the cache (it appends without populating it), so the first call
+    // here misses and reads disk; the second call must be served from cache, not a second read.
+    expect(readSpy).toHaveBeenCalledTimes(1);
+
+    await store.reopenComment('a.ts', created.id);
+    await store.resolveComment('a.ts', created.id, author);
+    readSpy.mockClear();
+    await store.getArchivedComments('a.ts');
+    await store.getArchivedComments('a.ts');
+    expect(readSpy).toHaveBeenCalledTimes(1); // one real disk read after the write, then served from cache
+  });
+
+  it('skips a corrupted line instead of discarding the whole archive, and warns once', async () => {
+    const store = new CommentStore(storageUri);
+    await store.initialize();
+    await markSourceFileExists('a.ts');
+    const good = await store.addComment('a.ts', makeAnchor(), 'good', author);
+    await store.resolveComment('a.ts', good.id, author);
+
+    // Simulate a corrupted trailing line (e.g. a partial write from a crash) by appending garbage.
+    const uri = archiveFileUri(storageUri, 'a.ts');
+    const existing = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
+    await vscode.workspace.fs.writeFile(uri, Buffer.from(existing + '{not valid json\n', 'utf8'));
+
+    const archived = await store.getArchivedComments('a.ts');
+    expect(archived).toHaveLength(1);
+    expect(archived[0].id).toBe(good.id);
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('corrupted archive data'));
+  });
+});
+
+describe('reanchorArchive', () => {
+  it('persists an updated archived anchor and fires a reanchor event', async () => {
+    const store = new CommentStore(storageUri);
+    await store.initialize();
+    await markSourceFileExists('a.ts');
+    const created = await store.addComment('a.ts', makeAnchor(), 'hello', author);
+    await store.resolveComment('a.ts', created.id, author);
+
+    const events: string[] = [];
+    store.onDidChangeFile((e) => events.push(e.kind));
+    await store.reanchorArchive('a.ts', (cs) => {
+      cs[0].anchor.lineHint = 42;
+      return true;
+    });
+    expect(events).toContain('reanchor');
+
+    const archived = await store.getArchivedComments('a.ts');
+    expect(archived[0].anchor.lineHint).toBe(42);
+  });
+
+  it('does not write or fire an event when the updater reports no change', async () => {
+    const store = new CommentStore(storageUri);
+    await store.initialize();
+    await markSourceFileExists('a.ts');
+    const created = await store.addComment('a.ts', makeAnchor(), 'hello', author);
+    await store.resolveComment('a.ts', created.id, author);
+
+    const events: string[] = [];
+    store.onDidChangeFile((e) => events.push(e.kind));
+    await store.reanchorArchive('a.ts', () => false);
+    expect(events).toHaveLength(0);
+  });
+
+  it('is a no-op on a file with no archive', async () => {
+    const store = new CommentStore(storageUri);
+    await store.initialize();
+    const updater = jest.fn(() => true);
+    await store.reanchorArchive('never-resolved.ts', updater as any);
+    expect(updater).toHaveBeenCalledWith([]);
+  });
+});
+
 describe('listArchivedFilePaths', () => {
   it('returns an empty map when the archive directory does not exist yet', async () => {
     const store = new CommentStore(storageUri);
