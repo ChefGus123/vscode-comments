@@ -163,6 +163,28 @@ export class CommentStore {
     return data;
   }
 
+  /** Raw archived (resolved) records for a file, in on-disk order. Shared by `getComments` and
+   * `reopenComment` so the JSONL-parse logic lives in one place. */
+  private async readArchive(filePath: string): Promise<ArchivedComment[]> {
+    try {
+      const bytes = await vscode.workspace.fs.readFile(archiveFileUri(this.storageUri, filePath));
+      return Buffer.from(bytes)
+        .toString('utf8')
+        .split('\n')
+        .filter((l) => l.trim().length > 0)
+        .map((l) => JSON.parse(l) as ArchivedComment);
+    } catch {
+      return [];
+    }
+  }
+
+  /** Archived (resolved) comments for a file in their native shape (full anchor, etc.) — for
+   * consumers that render comments the same way as live ones (unlike `getComments`, which flattens
+   * into the lighter MCP/tree-facing `ToolCommentView`). */
+  async getArchivedComments(filePath: string): Promise<StoredComment[]> {
+    return this.readArchive(filePath);
+  }
+
   private async persist(data: FileCommentData, kind: StoreChangeKind, comment?: StoredComment): Promise<void> {
     const uri = commentsFileUri(this.storageUri, data.filePath);
     if (data.comments.length === 0) {
@@ -257,17 +279,7 @@ export class CommentStore {
   async reopenComment(filePath: string, id: string): Promise<StoredComment | undefined> {
     return this.queueWrite(filePath, async () => {
       const archiveUri = archiveFileUri(this.storageUri, filePath);
-      let archived: ArchivedComment[] = [];
-      try {
-        const bytes = await vscode.workspace.fs.readFile(archiveUri);
-        const text = Buffer.from(bytes).toString('utf8');
-        archived = text
-          .split('\n')
-          .filter((l) => l.trim().length > 0)
-          .map((l) => JSON.parse(l) as ArchivedComment);
-      } catch {
-        archived = [];
-      }
+      const archived = await this.readArchive(filePath);
       const idx = archived.findIndex((c) => c.id === id);
       if (idx === -1) {
         return undefined;
@@ -373,19 +385,9 @@ export class CommentStore {
     const results: ToolCommentView[] = data.comments.map((c) => toView(filePath, data.fileStatus, c));
 
     if (includeResolved) {
-      const archiveUri = archiveFileUri(this.storageUri, filePath);
-      try {
-        const bytes = await vscode.workspace.fs.readFile(archiveUri);
-        const text = Buffer.from(bytes).toString('utf8');
-        const archived = text
-          .split('\n')
-          .filter((l) => l.trim().length > 0)
-          .map((l) => JSON.parse(l) as ArchivedComment);
-        for (const c of archived) {
-          results.push(toView(filePath, data.fileStatus, c));
-        }
-      } catch {
-        // no archive yet
+      const archived = await this.readArchive(filePath);
+      for (const c of archived) {
+        results.push(toView(filePath, data.fileStatus, c));
       }
     }
     return results;

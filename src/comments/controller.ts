@@ -26,7 +26,6 @@ function labelFor(status: AnchorStatus): string | undefined {
 interface RenderedThread {
   thread: vscode.CommentThread;
   commentId: string;
-  status: StoredComment['status'];
 }
 
 /** Rendered `vscode.Comment` with extra fields the base interface doesn't provide: `contextValue`
@@ -72,7 +71,14 @@ export class AgentCommentsController implements vscode.Disposable {
       }),
       vscode.workspace.onDidChangeTextDocument((e) => this.onDocumentChanged(e)),
       vscode.workspace.onDidCloseTextDocument((doc) => this.evictIfHidden(doc)),
-      store.onDidChangeFile((event) => this.onStoreChanged(event))
+      store.onDidChangeFile((event) => this.onStoreChanged(event)),
+      vscode.workspace.onDidChangeConfiguration((e) => {
+        if (e.affectsConfiguration('agenticComments.editor.hideResolvedComments')) {
+          for (const document of vscode.workspace.textDocuments) {
+            void this.renderDocument(document);
+          }
+        }
+      })
     );
 
     for (const document of vscode.workspace.textDocuments) {
@@ -127,7 +133,17 @@ export class AgentCommentsController implements vscode.Disposable {
     }
 
     const data = await this.store.loadFile(filePath);
-    this.syncThreads(document, filePath, data.comments);
+    const comments = this.hideResolvedComments()
+      ? data.comments
+      : [...data.comments, ...(await this.store.getArchivedComments(filePath))];
+    this.syncThreads(document, filePath, comments);
+  }
+
+  /** agenticComments.editor.hideResolvedComments — default true. When on, resolved comments are
+   * dropped from the gutter/editor as soon as they're resolved (still reachable via the sidebar);
+   * when off, they render alongside live comments, sourced from the archive on every re-render. */
+  private hideResolvedComments(): boolean {
+    return vscode.workspace.getConfiguration('agenticComments').get<boolean>('editor.hideResolvedComments', true);
   }
 
   private syncThreads(document: vscode.TextDocument, filePath: string, comments: StoredComment[]): void {
@@ -147,7 +163,6 @@ export class AgentCommentsController implements vscode.Disposable {
       const range = new vscode.Range(rangeStart, 0, rangeEnd, 0);
       if (rendered) {
         rendered.thread.range = range;
-        rendered.status = comment.status;
         this.updateThreadComment(rendered.thread, comment);
       } else {
         const vsComment = this.toVscodeComment(comment);
@@ -156,14 +171,15 @@ export class AgentCommentsController implements vscode.Disposable {
         thread.canReply = false;
         thread.contextValue = comment.status;
         thread.label = labelFor(comment.anchor.status);
-        existing.set(comment.id, { thread, commentId: comment.id, status: comment.status });
+        existing.set(comment.id, { thread, commentId: comment.id });
       }
     }
 
-    // Resolved threads are kept visible (with a Reopen action) for the rest of this session even
-    // though they've already moved out of the live JSON into the archive — see §7/§3.2.
+    // `comments` already reflects agenticComments.editor.hideResolvedComments (renderDocument
+    // decides whether archived/resolved comments are included), so anything no longer seen here
+    // has genuinely fallen out of what should be rendered — evict it.
     for (const [id, rendered] of existing) {
-      if (!seen.has(id) && rendered.status !== 'resolved') {
+      if (!seen.has(id)) {
         rendered.thread.dispose();
         existing.delete(id);
         this.editingCommentIds.delete(id);
@@ -239,14 +255,20 @@ export class AgentCommentsController implements vscode.Disposable {
     }
 
     if (event.kind === 'resolve' && event.comment) {
-      const rendered = this.threadsByFile.get(event.filePath)?.get(event.comment.id);
+      const threads = this.threadsByFile.get(event.filePath);
+      const rendered = threads?.get(event.comment.id);
       if (rendered) {
-        rendered.status = 'resolved';
+        if (this.hideResolvedComments()) {
+          rendered.thread.dispose();
+          threads?.delete(event.comment.id);
+          this.editingCommentIds.delete(event.comment.id);
+          return;
+        }
         rendered.thread.contextValue = 'resolved';
         // A resolve overrides any in-progress edit rather than deferring to it — once resolved, the
-        // comment leaves the live JSON for good (until reopened), so nothing will ever revisit this
-        // thread to apply a deferred rebuild. force:true lets it through immediately instead of
-        // leaving the textarea stuck open with stale content for the rest of the session.
+        // comment leaves the live JSON for good (until reopened), so nothing will revisit this
+        // thread on its own to apply a deferred rebuild. force:true lets it through immediately
+        // instead of leaving the textarea stuck open with stale content for the rest of the session.
         this.updateThreadComment(rendered.thread, event.comment, { force: true });
         return;
       }

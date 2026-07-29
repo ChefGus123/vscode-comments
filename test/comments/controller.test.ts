@@ -4,7 +4,11 @@ import { AgentCommentsController } from '../../src/comments/controller';
 import { createAnchor } from '../../src/anchoring/anchor';
 import { createTextDocument } from '../__mocks__/vscode';
 
-const mockVscode = vscode as unknown as { __reset(): void; _emitters: Record<string, { fire: (e: unknown) => void }> };
+const mockVscode = vscode as unknown as {
+  __reset(): void;
+  __setConfig(key: string, value: unknown): void;
+  _emitters: Record<string, { fire: (e: unknown) => void }>;
+};
 const storageUri = vscode.Uri.file('/storage');
 const repoUri = vscode.Uri.file('/repo');
 const extensionUri = vscode.Uri.file('/ext');
@@ -238,7 +242,38 @@ describe('onStoreChanged', () => {
     expect(thread.dispose).toHaveBeenCalled();
   });
 
-  it('updates the rendered thread in place on a resolve event without disposing it', async () => {
+  it('disposes and forgets the thread on a resolve event by default (hideResolvedComments: true)', async () => {
+    const { store, commentController } = await setup();
+    const uri = await writeSourceFile('a.ts', 'one\ntwo');
+    const created = await store.addComment('a.ts', { lineHint: 1, endLineHint: 1, contentHash: 'h', contextBefore: '', contextAfter: 'two', status: 'exact' }, 'hi', { type: 'user' });
+    await vscode.workspace.openTextDocument(uri);
+    await flush();
+    const thread = commentController.createCommentThread.mock.results[0].value;
+
+    await store.resolveComment('a.ts', created.id, { type: 'agent' });
+    await flush();
+    expect(thread.dispose).toHaveBeenCalled();
+  });
+
+  it('a resolve event on an in-progress edit disposes the thread and clears the editing guard by default', async () => {
+    const { store, controller, commentController } = await setup();
+    const uri = await writeSourceFile('a.ts', 'one\ntwo');
+    const created = await store.addComment('a.ts', { lineHint: 1, endLineHint: 1, contentHash: 'h', contextBefore: '', contextAfter: 'two', status: 'exact' }, 'hi', { type: 'user' });
+    await vscode.workspace.openTextDocument(uri);
+    await flush();
+    const thread = commentController.createCommentThread.mock.results[0].value;
+    const comment = thread.comments[0];
+    controller.editComment(comment);
+
+    await store.resolveComment('a.ts', created.id, { type: 'agent' });
+    await flush();
+
+    expect(thread.dispose).toHaveBeenCalled();
+    expect((controller as any).editingCommentIds.has(created.id)).toBe(false);
+  });
+
+  it('updates the rendered thread in place on a resolve event without disposing it when hideResolvedComments is false', async () => {
+    mockVscode.__setConfig('agenticComments.editor.hideResolvedComments', false);
     const { store, commentController } = await setup();
     const uri = await writeSourceFile('a.ts', 'one\ntwo');
     const created = await store.addComment('a.ts', { lineHint: 1, endLineHint: 1, contentHash: 'h', contextBefore: '', contextAfter: 'two', status: 'exact' }, 'hi', { type: 'user' });
@@ -253,7 +288,8 @@ describe('onStoreChanged', () => {
     expect(thread.comments[0].label).toBe('resolved by agent');
   });
 
-  it('a resolve event overrides an in-progress edit, resetting the comment back to Preview mode instead of leaving it stuck', async () => {
+  it('a resolve event overrides an in-progress edit, resetting the comment back to Preview mode instead of leaving it stuck, when hideResolvedComments is false', async () => {
+    mockVscode.__setConfig('agenticComments.editor.hideResolvedComments', false);
     const { store, controller, commentController } = await setup();
     const uri = await writeSourceFile('a.ts', 'one\ntwo');
     const created = await store.addComment('a.ts', { lineHint: 1, endLineHint: 1, contentHash: 'h', contextBefore: '', contextAfter: 'two', status: 'exact' }, 'hi', { type: 'user' });
@@ -270,6 +306,29 @@ describe('onStoreChanged', () => {
     expect(thread.comments[0].mode).toBe(vscode.CommentMode.Preview);
     expect(thread.comments[0].label).toBe('resolved by agent');
     expect((controller as any).editingCommentIds.has(created.id)).toBe(false);
+  });
+
+  it('re-renders visible documents when hideResolvedComments is toggled live, showing/hiding resolved threads accordingly', async () => {
+    const { store, commentController } = await setup();
+    const uri = await writeSourceFile('a.ts', 'one\ntwo');
+    const created = await store.addComment('a.ts', { lineHint: 1, endLineHint: 1, contentHash: 'h', contextBefore: '', contextAfter: 'two', status: 'exact' }, 'hi', { type: 'user' });
+    await vscode.workspace.openTextDocument(uri);
+    await flush();
+    const thread = commentController.createCommentThread.mock.results[0].value;
+
+    await store.resolveComment('a.ts', created.id, { type: 'agent' });
+    await flush();
+    expect(thread.dispose).toHaveBeenCalled();
+
+    mockVscode.__setConfig('agenticComments.editor.hideResolvedComments', false);
+    await flush();
+    expect(commentController.createCommentThread).toHaveBeenCalledTimes(2);
+    const reshownThread = commentController.createCommentThread.mock.results[1].value;
+    expect(reshownThread.contextValue).toBe('resolved');
+
+    mockVscode.__setConfig('agenticComments.editor.hideResolvedComments', true);
+    await flush();
+    expect(reshownThread.dispose).toHaveBeenCalled();
   });
 
   it('handles a resolve event for a file with no rendered thread by falling through to the default path', async () => {

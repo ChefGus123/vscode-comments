@@ -273,6 +273,7 @@ export const _emitters = {
   didChangeTextDocument: new EventEmitter<{ document: MockTextDocument; contentChanges: unknown[] }>(),
   didCloseTextDocument: new EventEmitter<MockTextDocument>(),
   didChangeVisibleTextEditors: new EventEmitter<MockTextEditor[]>(),
+  didChangeConfiguration: new EventEmitter<{ affectsConfiguration(section: string): boolean }>(),
 };
 
 // ---------- configuration ----------
@@ -282,6 +283,7 @@ const configStore = new Map<string, unknown>();
 /** Test-only helper: `key` is the fully-qualified setting id, e.g. "agenticComments.mcp.snippetMaxChars". */
 export function __setConfig(key: string, value: unknown): void {
   configStore.set(key, value);
+  _emitters.didChangeConfiguration.fire({ affectsConfiguration: (section) => key === section || key.startsWith(`${section}.`) });
 }
 
 // ---------- workspace ----------
@@ -337,6 +339,7 @@ export const workspace = {
   onDidOpenTextDocument: _emitters.didOpenTextDocument.event,
   onDidChangeTextDocument: _emitters.didChangeTextDocument.event,
   onDidCloseTextDocument: _emitters.didCloseTextDocument.event,
+  onDidChangeConfiguration: _emitters.didChangeConfiguration.event,
 };
 
 // ---------- window ----------
