@@ -581,6 +581,37 @@ describe('onDocumentChanged debounce + reanchorAfterChange', () => {
     expect((await store.getArchivedComments('shift.ts'))[0].anchor.lineHint).toBe(5);
   });
 
+  it('fully reanchors the archive when hideResolvedComments is toggled on for an already-open file, catching drift accumulated while hidden', async () => {
+    // Starts hidden (default) — the file's first-open pass runs while nothing shows the archive.
+    const { store, controller } = await setup();
+    const lines = ['zero', 'one', 'two', 'target', 'four'];
+    const uri = await writeSourceFile('shift.ts', lines.join('\n'));
+    const anchor = createAnchor(createTextDocument(uri, lines.join('\n')) as any, 3, 3); // exact match on 'target'
+    const created = await store.addComment('shift.ts', anchor, 'hi', { type: 'user' });
+    await store.resolveComment('shift.ts', created.id, { type: 'user' });
+    const doc = await vscode.workspace.openTextDocument(uri);
+    await vscode.window.showTextDocument(doc);
+    await (controller as any).renderDocument(doc);
+
+    // Edit while still hidden — reanchorAfterChange deliberately skips the archive here since
+    // nothing renders it, so the stored anchor goes stale on purpose.
+    (doc as any).__setText(['NEW', ...lines].join('\n'));
+    mockVscode._emitters.didChangeTextDocument.fire({
+      document: doc,
+      contentChanges: [{ range: new vscode.Range(0, 0, 0, 0), text: 'NEW\n' }],
+    });
+    await jest.advanceTimersByTimeAsync(1000);
+    expect((await store.getArchivedComments('shift.ts'))[0].anchor.lineHint).toBe(4); // still stale
+
+    // Show resolved comments without closing the tab. Before the fix, the archive's one-time full
+    // reanchor was nested inside reanchoredOnOpen — already consumed by the first (hidden) open —
+    // so it would never run again for this file and the comment would stay stuck at line 4 forever.
+    mockVscode.__setConfig('agenticComments.editor.hideResolvedComments', false);
+    await (controller as any).renderDocument(doc);
+
+    expect((await store.getArchivedComments('shift.ts'))[0].anchor.lineHint).toBe(5);
+  });
+
   it('debounces rapid edits and reanchors comments once after the quiet period', async () => {
     const { store } = await setup();
     const uri = await writeSourceFile('a.ts', 'one\ntwo\nthree');

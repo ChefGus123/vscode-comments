@@ -489,6 +489,7 @@ export class CommentStore {
   async clearAll(): Promise<void> {
     this.index.clear();
     this.cache.clear();
+    this.archiveCache.clear();
     try {
       await vscode.workspace.fs.delete(this.storageUri, { recursive: true, useTrash: false });
     } catch {

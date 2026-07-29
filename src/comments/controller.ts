@@ -86,15 +86,24 @@ export class AgentCommentsController implements vscode.Disposable {
   private readonly threadsByFile = new Map<string, Map<string, RenderedThread>>();
   private readonly debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly reanchoredOnOpen = new Set<string>();
+  /** Tracks, separately from `reanchoredOnOpen`, whether a file's archive has had its one-time full
+   * reanchor since it started being shown. Decoupled because `reanchoredOnOpen` is a per-document-
+   * open-lifetime flag: a file opened while hideResolvedComments was on (skipping the archive pass
+   * entirely) and later toggled off *without closing the tab* would otherwise never get one, since
+   * the outer gate is already permanently set. Cleared on every config change to that setting (both
+   * directions) so drift accumulated while hidden is always caught the next time comments are shown. */
+  private readonly archiveReanchoredWhileShown = new Set<string>();
   /** Comment ids currently in the gutter's editable textarea. Re-renders (onDidChangeVisibleTextEditors,
    * onStoreChanged, etc.) fire independently of that in-progress edit and must not rebuild these comments
    * via toVscodeComment — that would stomp CommentMode.Editing back to Preview mid-edit. */
   private readonly editingCommentIds = new Set<string>();
   private pendingDraftThread: vscode.CommentThread | undefined;
   /** Serializes render/mutation work per file so an in-flight `renderDocument` (which awaits real
-   * disk I/O when showing archived comments) can never race a same-file store event that mutates
-   * `threadsByFile` directly — without this, a render that captured pre-event data could resurrect
-   * a thread a concurrent resolve/delete/edit had just disposed or updated. */
+   * disk I/O when showing archived comments) can't race the delete/resolve/edit handling in
+   * `onStoreChanged` — without this, a render that captured pre-event data could resurrect a thread
+   * those had just disposed or updated. Scoped to those two call sites specifically; `evictIfHidden`
+   * and onStoreChanged's own generic fallback still mutate `threadsByFile` outside this queue (a
+   * pre-existing gap, not one this queue was built to close). */
   private readonly fileQueues = new Map<string, Promise<void>>();
 
   constructor(private readonly store: CommentStore, private readonly extensionUri: vscode.Uri) {
@@ -121,6 +130,9 @@ export class AgentCommentsController implements vscode.Disposable {
       store.onDidChangeFile((event) => this.onStoreChanged(event)),
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (e.affectsConfiguration('agenticComments.editor.hideResolvedComments')) {
+          // Any file shown before this change may have drifted while hidden (edits aren't tracked
+          // against the archive while nothing renders it) — force a fresh full reanchor next time.
+          this.archiveReanchoredWhileShown.clear();
           // Only visible editors need an eager re-render — a background tab picks up the current
           // setting anyway the next time it becomes visible, via onDidChangeVisibleTextEditors.
           for (const editor of vscode.window.visibleTextEditors) {
@@ -147,7 +159,14 @@ export class AgentCommentsController implements vscode.Disposable {
   private enqueue(filePath: string, task: () => void | Promise<void>): Promise<void> {
     const prior = this.fileQueues.get(filePath) ?? Promise.resolve();
     const next = prior.then(task, task);
-    const settled = next.catch(() => undefined);
+    // Swallowed here so one failing task can't permanently wedge the queue for this file (matching
+    // CommentStore.queueWrite) — but every current caller fires this with `void`, so without
+    // logging here a thrown error would vanish with no trace anywhere, unlike before this queue
+    // existed, when the same disposal logic ran inline and a throw would have surfaced via VS
+    // Code's own listener-error logging.
+    const settled = next.catch((err) => {
+      console.error('Agentic Comments: error in queued render/mutation task for', filePath, err);
+    });
     this.fileQueues.set(filePath, settled);
     void settled.then(() => {
       if (this.fileQueues.get(filePath) === settled) {
@@ -185,12 +204,16 @@ export class AgentCommentsController implements vscode.Disposable {
       await this.store.reanchorIfFileChanged(filePath, document.getText(), (comments) =>
         applyFullReanchor(comments, document)
       );
-      // Archived comments are only reachable here (not via reanchorIfFileChanged's cheap hash
-      // short-circuit — there's no per-file "last checked" hash for the archive), but they're only
-      // rendered at all when the setting is off, so only pay this cost then.
-      if (!this.hideResolvedComments()) {
-        await this.store.reanchorArchive(filePath, (comments) => applyFullReanchor(comments, document));
-      }
+    }
+    // Deliberately its own gate, not folded into the one above: a file can reach here with
+    // reanchoredOnOpen already set (opened while hidden, then shown later without closing the tab)
+    // — archived comments are only reachable here at all when the setting is off, and there's no
+    // per-file "last checked" hash for the archive the way reanchorIfFileChanged has for live
+    // comments, so a one-time full reanchor per hidden→shown transition is the cheapest correct
+    // option (archiveReanchoredWhileShown is cleared on every config change to this setting).
+    if (!this.hideResolvedComments() && !this.archiveReanchoredWhileShown.has(filePath)) {
+      this.archiveReanchoredWhileShown.add(filePath);
+      await this.store.reanchorArchive(filePath, (comments) => applyFullReanchor(comments, document));
     }
 
     const data = await this.store.loadFile(filePath);
@@ -392,6 +415,7 @@ export class AgentCommentsController implements vscode.Disposable {
       this.threadsByFile.delete(filePath);
     }
     this.reanchoredOnOpen.delete(filePath);
+    this.archiveReanchoredWhileShown.delete(filePath);
   }
 
   private onDocumentChanged(e: vscode.TextDocumentChangeEvent): void {

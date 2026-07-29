@@ -691,6 +691,24 @@ describe('clearAll', () => {
     await expect(store.clearAll()).resolves.toBeUndefined();
     expect(store.getIndexSnapshot().size).toBe(0);
   });
+
+  it('invalidates the archive cache too, so a previously-read archive does not resurrect after clearing', async () => {
+    const store = new CommentStore(storageUri);
+    await store.initialize();
+    await markSourceFileExists('a.ts');
+    const created = await store.addComment('a.ts', makeAnchor(), 'hello', author);
+    await store.resolveComment('a.ts', created.id, author);
+    // Populate the archive cache before clearing — this is what previously went stale.
+    expect(await store.getArchivedComments('a.ts')).toHaveLength(1);
+
+    await store.clearAll();
+    expect(await store.getArchivedComments('a.ts')).toEqual([]);
+
+    // Reopening a comment that "shouldn't exist" after a clear would be a symptom of the same bug:
+    // a stale cached array getting spliced and written back out to disk.
+    const reopened = await store.reopenComment('a.ts', created.id);
+    expect(reopened).toBeUndefined();
+  });
 });
 
 describe('cache eviction', () => {
