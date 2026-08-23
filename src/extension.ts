@@ -100,6 +100,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       wrapCommand('addCommentAtSelection', () => controller.addCommentAtSelection())
     ),
     vscode.commands.registerCommand(
+      'agentComments.addCommentFromPreview',
+      wrapCommand('addCommentFromPreview', (ctx?: Parameters<typeof controller.addCommentFromPreview>[0]) =>
+        controller.addCommentFromPreview(ctx)
+      )
+    ),
+    vscode.commands.registerCommand(
       'agentComments.refreshTree',
       wrapCommand('refreshTree', () => treeProvider.refresh())
     ),

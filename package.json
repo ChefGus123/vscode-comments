@@ -2,7 +2,7 @@
   "name": "agentic-comments",
   "displayName": "Agentic Comments",
   "description": "Leave GitHub-style inline review comments on live code and expose them to AI coding agents via MCP.",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "publisher": "IlayAmir",
   "icon": "media/icon.png",
   "galleryBanner": {
@@ -121,7 +121,15 @@
         "command": "agentComments.addCommentAtSelection",
         "title": "Add Comment",
         "category": "Agentic Comments"
+      },
+      {
+        "command": "agentComments.addCommentFromPreview",
+        "title": "Add Comment",
+        "category": "Agentic Comments"
       }
+    ],
+    "markdown.previewScripts": [
+      "./media/preview.js"
     ],
     "menus": {
       "commandPalette": [
@@ -168,6 +176,17 @@
         {
           "command": "agentComments.deleteCommentInTree",
           "when": "false"
+        },
+        {
+          "command": "agentComments.addCommentFromPreview",
+          "when": "false"
+        }
+      ],
+      "webview/context": [
+        {
+          "command": "agentComments.addCommentFromPreview",
+          "group": "9_comment",
+          "when": "webviewSection == 'agentCommentsPreviewTarget'"
         }
       ],
       "editor/context": [

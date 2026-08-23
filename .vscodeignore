@@ -17,3 +17,5 @@ jest.config.js
 babel.config.js
 CODEOWNERS
 .github/**
+preview-test/**
+md-preview-comments.md

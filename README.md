@@ -16,6 +16,7 @@ Leave GitHub-style inline review comments on your live code, and let AI coding a
 ## Features
 
 - **Inline comments, right in the gutter** — hover any line for the native "+", or right-click a line/selection → **Add Comment**. One message per comment, no reply threads to manage.
+- **Comment on rendered Markdown** — right-click any block in VS Code's built-in Markdown preview → **Add Comment**, and it anchors to the matching line of the source `.md`. Select across several blocks first and the comment covers the whole span; the input box tells you which lines it captured before you type. Review a doc the way you'd read it, not as raw syntax. (Comments show up in the editor gutter and sidebar as usual — the preview itself stays clean.)
 - **Comments survive edits** — anchored by content hash plus surrounding context, not just a line number. As code shifts, a comment stays `exact`, degrades to `approximate` (relocated nearby), or is flagged `orphaned` if the code is gone — never silently deleted or hidden. An orphaned comment stays frozen where it was last confidently placed, and always shows the original code snippet it was about, so it never gets impossible to recognize.
 - **Built for agents, not just humans** — an in-process MCP server exposes your comments as structured tools (list, fetch, create, resolve), so an agent can pull exactly what's unresolved in a file or across the whole workspace instead of you re-explaining it in chat.
 - **User vs. agent, at a glance** — blue author icon for comments you wrote, red for ones an agent left; resolved comments carry a "resolved by user/agent" tag.
@@ -29,6 +30,7 @@ Leave GitHub-style inline review comments on your live code, and let AI coding a
 | Command | Trigger |
 |---|---|
 | **Add Comment** | Gutter "+" on hover, or right-click a line/selection in the editor |
+| **Add Comment** (Markdown preview) | Right-click a block in the built-in Markdown preview — anchors to the matching line of the source `.md`, or to every block a selection touches |
 | **Resolve** / **Reopen** | Comment thread title bar, or inline in the sidebar |
 | **Delete** | Comment thread title bar, or inline in the sidebar — permanent, works on unresolved and resolved comments alike |
 | **Edit** / **Save** / **Cancel** | Pencil icon on hover, then Save/Cancel buttons — text only, unresolved comments only |
@@ -59,6 +61,11 @@ Every response flags comments whose anchor isn't exact (`locationUncertain: true
 | `agenticComments.mcp.snippetMaxChars` | `500` | Maximum characters of `originalContent` before truncation. `0` omits the snippet entirely. |
 
 ## Release Notes
+
+### 0.4.0
+- **Comment on rendered Markdown.** Right-click any block in VS Code's built-in Markdown preview → **Add Comment**, and it anchors to the matching line of the source `.md`. Review a doc the way you read it, not as raw syntax.
+- Select across several blocks first and the comment covers the whole span. Because Markdown's source mapping is block-level, a selection always widens to whole blocks — so the input box tells you exactly which lines it captured before you type.
+- Comments made from the preview are ordinary comments: same gutter, same sidebar, same MCP tools, indistinguishable from ones you left in the editor. The preview itself stays clean — nothing is rendered over your document.
 
 ### 0.3.1
 - Resolved comments are now hidden from the editor gutter by default (still accessible from the sidebar) — new `agenticComments.editor.hideResolvedComments` setting.

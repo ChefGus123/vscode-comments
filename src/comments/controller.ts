@@ -65,6 +65,19 @@ function applyIncrementalReanchor(
   return changed;
 }
 
+/** The `data-vscode-context` payload media/preview.js sets on the right-clicked block. VS Code
+ * forwards it verbatim (plus its own `webviewSection`/`webview` keys) as the command's argument. */
+interface PreviewCommentContext {
+  agentCommentsSource?: string;
+  /** Zero-based source line, straight from the preview's `data-line` scroll-sync attribute. */
+  agentCommentsLine?: number;
+  /** Zero-based last line of the selected block span; equals `agentCommentsLine` for a bare
+   * right-click. Derived in preview.js from the *next* block's `data-line`, so it still includes
+   * the blank separator line — trimmed here. */
+  agentCommentsEndLine?: number;
+  agentCommentsSelection?: string;
+}
+
 interface RenderedThread {
   thread: vscode.CommentThread;
   commentId: string;
@@ -492,6 +505,67 @@ export class AgentCommentsController implements vscode.Disposable {
     const thread = this.controller.createCommentThread(editor.document.uri, range, []);
     thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
     this.pendingDraftThread = thread;
+  }
+
+  /** Payload forwarded by the `webview/context` menu item — the `data-vscode-context` object our
+   * media/preview.js set on the right-clicked block, plus keys core adds itself. */
+  private static readonly PREVIEW_INPUT_MAX = 60;
+
+  /** Right-click "Add Comment" inside VS Code's built-in Markdown preview. The preview is a webview
+   * with no message channel back to us (see media/preview.js), so everything we need arrives as the
+   * menu item's forwarded context: the source .md URI and the zero-based source line. Uses an input
+   * box rather than the gutter's draft thread because the preview isn't a TextEditor — there's no
+   * gutter to draw one in. */
+  async addCommentFromPreview(ctx?: PreviewCommentContext): Promise<void> {
+    const source = ctx?.agentCommentsSource;
+    const line0 = ctx?.agentCommentsLine;
+    if (typeof source !== 'string' || typeof line0 !== 'number' || !Number.isFinite(line0)) {
+      vscode.window.showWarningMessage(
+        'Agentic Comments: could not tell which line of the source file that was — try right-clicking directly on a paragraph or heading.'
+      );
+      return;
+    }
+
+    const uri = vscode.Uri.parse(source);
+    if (uri.scheme !== 'file') {
+      vscode.window.showWarningMessage('Agentic Comments: previews of unsaved or virtual documents can\'t be commented on.');
+      return;
+    }
+
+    const document = await vscode.workspace.openTextDocument(uri);
+    // data-line is zero-based and can point one past the last line (the preview appends a
+    // `data-line="${lineCount}"` sentinel div after the body), so clamp into the document.
+    const clamp = (n: number): number => Math.min(Math.max(0, Math.floor(n)), Math.max(0, document.lineCount - 1));
+    const line = clamp(line0);
+    const end0 = ctx?.agentCommentsEndLine;
+    let end = typeof end0 === 'number' && Number.isFinite(end0) ? Math.max(line, clamp(end0)) : line;
+    // preview.js derives the end from where the *next* block starts, which leaves the blank
+    // separator line(s) between them inside the range.
+    while (end > line && document.lineAt(end).text.trim() === '') {
+      end--;
+    }
+
+    // Snap-and-show: the source map is block-level, so a selection is widened to whole blocks. Say
+    // exactly which lines that came out as, before the user commits to a comment about them.
+    const where = end > line ? `Lines ${line + 1}–${end + 1}` : `Line ${line + 1}`;
+    const selection = ctx?.agentCommentsSelection?.trim();
+    const preview = selection || document.lineAt(line).text.trim();
+    const truncated =
+      preview.length > AgentCommentsController.PREVIEW_INPUT_MAX
+        ? `${preview.slice(0, AgentCommentsController.PREVIEW_INPUT_MAX)}…`
+        : preview;
+
+    const text = await vscode.window.showInputBox({
+      title: 'Add Comment',
+      prompt: truncated ? `${where}: ${truncated}` : where,
+      placeHolder: 'Comment…',
+    });
+    if (!text?.trim()) {
+      return;
+    }
+
+    const anchor = createAnchor(document, line, end);
+    await this.store.addComment(toWorkspaceRelativePath(document.uri), anchor, text.trim(), { type: 'user' });
   }
 
   async resolveThread(thread: vscode.CommentThread | undefined, resolvedByType: AuthorType): Promise<void> {

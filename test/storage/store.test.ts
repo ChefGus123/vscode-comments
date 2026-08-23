@@ -746,6 +746,39 @@ describe('cache eviction', () => {
       })
     ).not.toThrow();
   });
+
+  it('evicts the oldest archive entry once the archive cache exceeds its capacity', async () => {
+    const store = new CommentStore(storageUri);
+    await store.initialize();
+    for (let i = 0; i < 51; i++) {
+      const file = `arch${i}.ts`;
+      await markSourceFileExists(file);
+      const created = await store.addComment(file, makeAnchor(), `c${i}`, author);
+      // Resolving moves the comment into the archive, which populates the archive cache.
+      await store.resolveComment(file, created.id, author);
+      await store.getArchivedComments(file);
+    }
+
+    const readFileSpy = jest.spyOn(vscode.workspace.fs, 'readFile');
+    readFileSpy.mockClear();
+    await store.getArchivedComments('arch0.ts');
+    expect(readFileSpy).toHaveBeenCalledWith(archiveFileUri(storageUri, 'arch0.ts'));
+  });
+
+  it('defensively tolerates an archive eviction candidate reported as undefined', () => {
+    const store = new CommentStore(storageUri);
+    const fakeCache = {
+      size: 51,
+      delete: jest.fn(),
+      set: jest.fn(),
+      get: jest.fn(),
+      keys: () => ({ next: () => ({ value: undefined }) }),
+    };
+    (store as unknown as { archiveCache: unknown }).archiveCache = fakeCache;
+    expect(() =>
+      (store as unknown as { touchArchiveCache: (f: string, d: unknown[]) => void }).touchArchiveCache('x', [])
+    ).not.toThrow();
+  });
 });
 
 describe('write queue', () => {

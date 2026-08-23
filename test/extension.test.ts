@@ -3,6 +3,7 @@ import { activate, deactivate } from '../src/extension';
 import { AgentCommentsTreeProvider, CommentNode } from '../src/ui/treeView';
 import { AgentCommentsMcpServer } from '../src/mcp/server';
 import { CommentStore } from '../src/storage/store';
+import { AgentCommentsController } from '../src/comments/controller';
 
 const mockVscode = vscode as unknown as { __reset(): void };
 const repoUri = vscode.Uri.file('/repo');
@@ -116,6 +117,20 @@ describe('registered commands delegate to the right collaborator', () => {
     commandHandler('agentComments.addCommentAtSelection')();
     // Each of these hits the controller's own "no thread/editor" warning path, proving the wiring runs end to end.
     expect(vscode.window.showWarningMessage).toHaveBeenCalled();
+    await Promise.all(context.subscriptions.map((d) => d.dispose()));
+  });
+
+  it('addCommentFromPreview forwards the webview context object to the controller', async () => {
+    const context = await activateNormally();
+    await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(repoUri, 'a.md'), Buffer.from('one\ntwo', 'utf8'));
+    const spy = jest.spyOn(AgentCommentsController.prototype, 'addCommentFromPreview');
+    const ctx = { agentCommentsSource: vscode.Uri.joinPath(repoUri, 'a.md').toString(), agentCommentsLine: 1 };
+
+    await commandHandler('agentComments.addCommentFromPreview')(ctx);
+
+    // The payload must arrive verbatim — VS Code forwards the `data-vscode-context` object as-is.
+    expect(spy).toHaveBeenCalledWith(ctx);
+    expect(vscode.window.showInputBox).toHaveBeenCalled();
     await Promise.all(context.subscriptions.map((d) => d.dispose()));
   });
 

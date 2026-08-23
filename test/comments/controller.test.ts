@@ -299,6 +299,27 @@ describe('onStoreChanged', () => {
     expect(thread.comments[0].label).toBe('resolved by agent');
   });
 
+  it('tolerates the thread disappearing between the resolve event and the queued update running', async () => {
+    mockVscode.__setConfig('agenticComments.editor.hideResolvedComments', false);
+    const { store, controller } = await setup();
+    const uri = await writeSourceFile('a.ts', 'one\ntwo');
+    const created = await store.addComment('a.ts', { lineHint: 1, endLineHint: 1, contentHash: 'h', contextBefore: '', contextAfter: 'two', status: 'exact' }, 'hi', { type: 'user' });
+    await vscode.workspace.openTextDocument(uri);
+    await flush();
+
+    // onStoreChanged checks for the thread synchronously but applies the update on the per-file
+    // queue. Hold that queue open so the eviction can land in between the two, which is the window
+    // the inner re-check exists to cover.
+    let release!: () => void;
+    (controller as any).fileQueues.set('a.ts', new Promise<void>((r) => (release = r)));
+
+    await store.resolveComment('a.ts', created.id, { type: 'agent' });
+    (controller as any).threadsByFile.get('a.ts').delete(created.id);
+    release();
+
+    await expect(flush()).resolves.toBeUndefined();
+  });
+
   it('a resolve event overrides an in-progress edit, resetting the comment back to Preview mode instead of leaving it stuck, when hideResolvedComments is false', async () => {
     mockVscode.__setConfig('agenticComments.editor.hideResolvedComments', false);
     const { store, controller, commentController } = await setup();
@@ -343,6 +364,20 @@ describe('onStoreChanged', () => {
     mockVscode.__setConfig('agenticComments.editor.hideResolvedComments', true);
     await flush();
     expect(reshownThread.dispose).toHaveBeenCalled();
+  });
+
+  it('ignores configuration changes to unrelated settings', async () => {
+    const { store, commentController } = await setup();
+    const uri = await writeSourceFile('a.ts', 'one\ntwo');
+    await store.addComment('a.ts', { lineHint: 1, endLineHint: 1, contentHash: 'h', contextBefore: '', contextAfter: 'two', status: 'exact' }, 'hi', { type: 'user' });
+    await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri));
+    await flush();
+    expect(commentController.createCommentThread).toHaveBeenCalledTimes(1);
+
+    // A change to somebody else's setting must not trigger the archive-reanchor + re-render pass.
+    mockVscode.__setConfig('editor.fontSize', 14);
+    await flush();
+    expect(commentController.createCommentThread).toHaveBeenCalledTimes(1);
   });
 
   it('handles a resolve event for a file with no rendered thread by falling through to the default path', async () => {
@@ -762,6 +797,312 @@ describe('addCommentAtSelection', () => {
 
     controller.addCommentAtSelection();
     expect(first.dispose).toHaveBeenCalled();
+  });
+});
+
+describe('per-file render queue', () => {
+  it('logs and keeps the queue usable when a queued task throws', async () => {
+    const { store, commentController } = await setup();
+    const uri = await writeSourceFile('boom.ts', 'one\ntwo');
+    const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    // Every caller fires queued work with `void`, so without this log a throw would vanish silently.
+    const loadFileSpy = jest.spyOn(store, 'loadFile').mockRejectedValueOnce(new Error('disk on fire'));
+
+    await vscode.workspace.openTextDocument(uri);
+    await flush();
+
+    expect(consoleSpy).toHaveBeenCalledWith(
+      'Agentic Comments: error in queued render/mutation task for',
+      'boom.ts',
+      expect.objectContaining({ message: 'disk on fire' })
+    );
+
+    // The queue must not be wedged: the next render for the same file still goes through.
+    loadFileSpy.mockRestore();
+    await store.addComment('boom.ts', { lineHint: 1, endLineHint: 1, contentHash: 'h', contextBefore: '', contextAfter: 'two', status: 'exact' }, 'after', { type: 'user' });
+    await flush();
+    expect(commentController.createCommentThread).toHaveBeenCalled();
+  });
+});
+
+describe('addCommentFromPreview', () => {
+  const inputBox = () => vscode.window.showInputBox as unknown as jest.Mock;
+  /** The `prompt` string the input box was last opened with — this is the "snap and show" output. */
+  const lastPrompt = (): string => inputBox().mock.calls.at(-1)![0].prompt;
+
+  /** A document whose blocks are easy to reason about by line number (1-based in comments):
+   *   1 `# Title`, 2 blank, 3-5 a three-line paragraph, 6 blank, 7 `last`. */
+  const DOC = '# Title\n\nalpha\nbeta\ngamma\n\nlast';
+
+  async function previewDoc(relativePath = 'doc.md', content = DOC): Promise<string> {
+    const uri = await writeSourceFile(relativePath, content);
+    return uri.toString();
+  }
+
+  describe('payload validation — never guesses a location', () => {
+    it.each([
+      ['no context at all', undefined],
+      ['no source', { agentCommentsLine: 0 }],
+      ['a non-string source', { agentCommentsSource: 42, agentCommentsLine: 0 }],
+      ['no line', { agentCommentsSource: 'file:///repo/doc.md' }],
+      ['a non-numeric line', { agentCommentsSource: 'file:///repo/doc.md', agentCommentsLine: '3' }],
+      ['a non-finite line', { agentCommentsSource: 'file:///repo/doc.md', agentCommentsLine: Number.NaN }],
+    ])('warns and creates nothing given %s', async (_label, ctx) => {
+      const { controller, store } = await setup();
+      await controller.addCommentFromPreview(ctx as any);
+      expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('could not tell which line'));
+      expect(inputBox()).not.toHaveBeenCalled();
+      expect((await store.loadFile('doc.md')).comments).toHaveLength(0);
+    });
+
+    it('warns for a preview of a non-file-scheme document', async () => {
+      const { controller } = await setup();
+      await controller.addCommentFromPreview({ agentCommentsSource: 'untitled://x/Untitled-1', agentCommentsLine: 0 });
+      expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('unsaved or virtual'));
+      expect(inputBox()).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('single-line anchors (bare right-click)', () => {
+    it('creates a user-authored comment anchored to the clicked line', async () => {
+      const { controller, store } = await setup();
+      const source = await previewDoc();
+      inputBox().mockResolvedValueOnce('  looks wrong  ');
+
+      // data-line is zero-based: 2 is source line 3, "alpha".
+      await controller.addCommentFromPreview({ agentCommentsSource: source, agentCommentsLine: 2 });
+
+      const [comment] = (await store.loadFile('doc.md')).comments;
+      expect(comment.text).toBe('looks wrong');
+      expect(comment.author).toEqual({ type: 'user' });
+      expect(comment.status).toBe('unresolved');
+      expect(comment.anchor.lineHint).toBe(3);
+      expect(comment.anchor.endLineHint).toBe(3);
+    });
+
+    it('matches createAnchor exactly, so a preview comment is indistinguishable from a gutter one', async () => {
+      const { controller, store } = await setup();
+      const source = await previewDoc();
+      const document = await vscode.workspace.openTextDocument(vscode.Uri.parse(source));
+      inputBox().mockResolvedValueOnce('hi');
+
+      await controller.addCommentFromPreview({ agentCommentsSource: source, agentCommentsLine: 2 });
+
+      const [comment] = (await store.loadFile('doc.md')).comments;
+      expect(comment.anchor).toEqual(createAnchor(document as any, 2, 2));
+    });
+
+    it('shows the line number and the clicked line\'s own text when nothing is selected', async () => {
+      const { controller } = await setup();
+      await controller.addCommentFromPreview({ agentCommentsSource: await previewDoc(), agentCommentsLine: 2 });
+      expect(lastPrompt()).toBe('Line 3: alpha');
+    });
+
+    it('prefers the selected text over the line text for the prompt', async () => {
+      const { controller } = await setup();
+      await controller.addCommentFromPreview({
+        agentCommentsSource: await previewDoc(),
+        agentCommentsLine: 2,
+        agentCommentsSelection: '  lph  ',
+      });
+      expect(lastPrompt()).toBe('Line 3: lph');
+    });
+
+    it('falls back to the line text when the selection is blank', async () => {
+      const { controller } = await setup();
+      await controller.addCommentFromPreview({
+        agentCommentsSource: await previewDoc(),
+        agentCommentsLine: 2,
+        agentCommentsSelection: '   ',
+      });
+      expect(lastPrompt()).toBe('Line 3: alpha');
+    });
+
+    it('truncates a long preview instead of overflowing the input box', async () => {
+      const { controller } = await setup();
+      const long = 'x'.repeat(200);
+      await controller.addCommentFromPreview({
+        agentCommentsSource: await previewDoc('long.md', long),
+        agentCommentsLine: 0,
+        agentCommentsSelection: long,
+      });
+      expect(lastPrompt()).toBe(`Line 1: ${'x'.repeat(60)}…`);
+    });
+
+    it('omits the separator when there is no text to show at all', async () => {
+      const { controller } = await setup();
+      // Line 2 (index 1) is blank and nothing is selected, so there is no preview text.
+      await controller.addCommentFromPreview({ agentCommentsSource: await previewDoc(), agentCommentsLine: 1 });
+      expect(lastPrompt()).toBe('Line 2');
+    });
+  });
+
+  describe('clamping a line into the document', () => {
+    it('clamps the preview\'s past-the-end sentinel line onto the last real line', async () => {
+      const { controller, store } = await setup();
+      const source = await previewDoc();
+      inputBox().mockResolvedValueOnce('at the end');
+      // The preview appends a `data-line="${lineCount}"` sentinel div after the body.
+      await controller.addCommentFromPreview({ agentCommentsSource: source, agentCommentsLine: 7 });
+      expect((await store.loadFile('doc.md')).comments[0].anchor.lineHint).toBe(7);
+    });
+
+    it('clamps a negative line to the first line', async () => {
+      const { controller, store } = await setup();
+      const source = await previewDoc();
+      inputBox().mockResolvedValueOnce('at the start');
+      await controller.addCommentFromPreview({ agentCommentsSource: source, agentCommentsLine: -5 });
+      expect((await store.loadFile('doc.md')).comments[0].anchor.lineHint).toBe(1);
+    });
+
+    it('floors a fractional line', async () => {
+      const { controller, store } = await setup();
+      const source = await previewDoc();
+      inputBox().mockResolvedValueOnce('fractional');
+      await controller.addCommentFromPreview({ agentCommentsSource: source, agentCommentsLine: 2.9 });
+      expect((await store.loadFile('doc.md')).comments[0].anchor.lineHint).toBe(3);
+    });
+  });
+
+  describe('multi-line anchors (selection snapped to whole blocks)', () => {
+    it('anchors the whole span and says so in the prompt', async () => {
+      const { controller, store } = await setup();
+      const source = await previewDoc();
+      inputBox().mockResolvedValueOnce('about this whole paragraph');
+
+      await controller.addCommentFromPreview({
+        agentCommentsSource: source,
+        agentCommentsLine: 2,
+        agentCommentsEndLine: 4,
+      });
+
+      expect(lastPrompt()).toBe('Lines 3–5: alpha');
+      const [comment] = (await store.loadFile('doc.md')).comments;
+      expect(comment.anchor.lineHint).toBe(3);
+      expect(comment.anchor.endLineHint).toBe(5);
+      expect(comment.anchor.originalContent).toBe('alpha\nbeta\ngamma');
+    });
+
+    it('trims the blank separator line left by deriving the end from the next block\'s start', async () => {
+      const { controller, store } = await setup();
+      const source = await previewDoc();
+      inputBox().mockResolvedValueOnce('trimmed');
+
+      // preview.js reports "the line before the next block starts" — index 5, a blank line.
+      await controller.addCommentFromPreview({
+        agentCommentsSource: source,
+        agentCommentsLine: 2,
+        agentCommentsEndLine: 5,
+      });
+
+      expect((await store.loadFile('doc.md')).comments[0].anchor.endLineHint).toBe(5);
+      expect(lastPrompt()).toBe('Lines 3–5: alpha');
+    });
+
+    it('trims a run of several blank lines back to the last line with content', async () => {
+      const { controller, store } = await setup();
+      const source = await previewDoc('gappy.md', 'alpha\n\n\n\nlast');
+      inputBox().mockResolvedValueOnce('trimmed hard');
+      await controller.addCommentFromPreview({
+        agentCommentsSource: source,
+        agentCommentsLine: 0,
+        agentCommentsEndLine: 3,
+      });
+      expect((await store.loadFile('gappy.md')).comments[0].anchor.endLineHint).toBe(1);
+      expect(lastPrompt()).toBe('Line 1: alpha');
+    });
+
+    it('never trims below the start line, even when the start line is itself blank', async () => {
+      const { controller, store } = await setup();
+      const source = await previewDoc();
+      inputBox().mockResolvedValueOnce('blank start');
+      await controller.addCommentFromPreview({
+        agentCommentsSource: source,
+        agentCommentsLine: 1,
+        agentCommentsEndLine: 1,
+      });
+      const { anchor } = (await store.loadFile('doc.md')).comments[0];
+      expect(anchor.lineHint).toBe(2);
+      expect(anchor.endLineHint).toBe(2);
+    });
+
+    it('ignores an end line before the start line rather than inverting the range', async () => {
+      const { controller, store } = await setup();
+      const source = await previewDoc();
+      inputBox().mockResolvedValueOnce('backwards');
+      await controller.addCommentFromPreview({
+        agentCommentsSource: source,
+        agentCommentsLine: 4,
+        agentCommentsEndLine: 2,
+      });
+      const { anchor } = (await store.loadFile('doc.md')).comments[0];
+      expect(anchor.lineHint).toBe(5);
+      expect(anchor.endLineHint).toBe(5);
+    });
+
+    it('clamps an out-of-range end line onto the last line', async () => {
+      const { controller, store } = await setup();
+      const source = await previewDoc();
+      inputBox().mockResolvedValueOnce('to the end');
+      await controller.addCommentFromPreview({
+        agentCommentsSource: source,
+        agentCommentsLine: 2,
+        agentCommentsEndLine: 99,
+      });
+      expect((await store.loadFile('doc.md')).comments[0].anchor.endLineHint).toBe(7);
+    });
+
+    it.each([
+      ['omitted', undefined],
+      ['a non-finite number', Number.NaN],
+      ['a non-number', '4'],
+    ])('stays single-line when the end line is %s', async (_label, agentCommentsEndLine) => {
+      const { controller, store } = await setup();
+      const source = await previewDoc();
+      inputBox().mockResolvedValueOnce('single');
+      await controller.addCommentFromPreview({
+        agentCommentsSource: source,
+        agentCommentsLine: 2,
+        agentCommentsEndLine,
+      } as any);
+      const { anchor } = (await store.loadFile('doc.md')).comments[0];
+      expect(anchor.lineHint).toBe(3);
+      expect(anchor.endLineHint).toBe(3);
+      expect(lastPrompt()).toBe('Line 3: alpha');
+    });
+  });
+
+  describe('dismissing the input box', () => {
+    it.each([
+      ['Esc', undefined],
+      ['an empty string', ''],
+      ['whitespace only', '   '],
+    ])('creates nothing when the user answers with %s', async (_label, answer) => {
+      const { controller, store } = await setup();
+      const source = await previewDoc();
+      inputBox().mockResolvedValueOnce(answer);
+      await controller.addCommentFromPreview({ agentCommentsSource: source, agentCommentsLine: 2 });
+      expect((await store.loadFile('doc.md')).comments).toHaveLength(0);
+    });
+  });
+
+  it('works on a file with no editor open for it — the URI alone is enough', async () => {
+    const { controller, store } = await setup();
+    const source = await previewDoc('closed.md');
+    expect(vscode.workspace.textDocuments.find((d) => d.uri.toString() === source)).toBeUndefined();
+    inputBox().mockResolvedValueOnce('from a closed file');
+
+    await controller.addCommentFromPreview({ agentCommentsSource: source, agentCommentsLine: 0 });
+
+    expect((await store.loadFile('closed.md')).comments).toHaveLength(1);
+  });
+
+  it('keys the comment off the workspace-relative path, matching every other entry point', async () => {
+    const { controller, store } = await setup();
+    const source = await previewDoc('docs/nested/deep.md');
+    inputBox().mockResolvedValueOnce('nested');
+    await controller.addCommentFromPreview({ agentCommentsSource: source, agentCommentsLine: 0 });
+    expect((await store.loadFile('docs/nested/deep.md')).comments).toHaveLength(1);
   });
 });
 
