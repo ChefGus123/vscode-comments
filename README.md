@@ -64,11 +64,13 @@ Every response flags comments whose anchor isn't exact (`locationUncertain: true
 
 ## Release Notes
 
+### 0.4.5
+- **The preview now shows comments too.** A commented-on block gets a small author-colored dot (blue for you, red for an agent) — click it to read the comment in place, right-click for Edit/Resolve/Reopen/Delete. Respects the resolved-comments setting below, and stays live as comments are added or changed anywhere else (gutter, sidebar, an agent's MCP call).
+
 ### 0.4.0
 - **Comment on rendered Markdown.** Right-click any block in VS Code's built-in Markdown preview → **Add Comment**, and it anchors to the matching line of the source `.md`. Review a doc the way you read it, not as raw syntax.
 - Select across several blocks first and the comment covers the whole span. Because Markdown's source mapping is block-level, a selection always widens to whole blocks — so the input box tells you exactly which lines it captured before you type.
 - Comments made from the preview are ordinary comments: same gutter, same sidebar, same MCP tools, indistinguishable from ones you left in the editor.
-- **The preview now shows comments too.** A commented-on block gets a small author-colored dot (blue for you, red for an agent) — click it to read the comment in place, right-click for Edit/Resolve/Reopen/Delete. Respects the resolved-comments setting below, and stays live as comments are added or changed anywhere else (gutter, sidebar, an agent's MCP call).
 
 ### 0.3.1
 - Resolved comments are now hidden from the editor gutter by default (still accessible from the sidebar) — new `agenticComments.editor.hideResolvedComments` setting.
