@@ -26,6 +26,7 @@ src/
   anchoring/         content hash + reanchor logic
   comments/          CommentController (editor UI)
   ui/                sidebar TreeView, Explorer decorations
+  preview/           markdown-it plugin (comment markers in the Markdown preview)
   mcp/               MCP server + tools
   types.ts
 ```

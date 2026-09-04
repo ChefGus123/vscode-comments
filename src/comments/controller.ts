@@ -4,6 +4,7 @@ import { resolveWorkspaceRelativePath, toWorkspaceRelativePath } from '../storag
 import { createAnchor, reanchor, shiftAnchorForChanges } from '../anchoring/anchor';
 import { formatOriginalSnippet, UI_SNIPPET_MAX_CHARS } from '../anchoring/snippet';
 import { AnchorStatus, AuthorType, StoredComment } from '../types';
+import { truncate } from '../ui/treeView';
 
 const DEBOUNCE_MS = 400;
 
@@ -11,6 +12,13 @@ function iconFor(authorType: AuthorType, status: AnchorStatus, extensionUri: vsc
   const base = authorType === 'user' ? 'author-user' : 'author-agent';
   const suffix = status === 'exact' ? '' : status === 'approximate' ? '-dim' : '-orphaned';
   return vscode.Uri.joinPath(extensionUri, 'media', `${base}${suffix}.svg`);
+}
+
+/** agenticComments.editor.hideResolvedComments — default true. Shared by the controller (gutter)
+ * and the markdown preview plugin (`src/preview/commentsMarkdownItPlugin.ts`) so both surfaces
+ * agree on whether a resolved comment is currently visible, from one place. */
+export function hideResolvedCommentsEnabled(): boolean {
+  return vscode.workspace.getConfiguration('agenticComments').get<boolean>('editor.hideResolvedComments', true);
 }
 
 function labelFor(status: AnchorStatus): string | undefined {
@@ -76,6 +84,15 @@ interface PreviewCommentContext {
    * the blank separator line — trimmed here. */
   agentCommentsEndLine?: number;
   agentCommentsSelection?: string;
+  /** Comma-joined comment ids the right-clicked block carries, forwarded by preview.js from the
+   * `data-agent-comment-ids` attribute `commentsMarkdownItPlugin.ts` set on it. Empty/absent when
+   * the block has no comments. */
+  agentCommentsCommentIds?: string;
+  /** 'true'/'false' strings (not consumed here — only by package.json's webview/context `when`
+   * clauses, which pre-filter which of the Resolve/Reopen menu items even show up before the
+   * controller does its own precise per-id filtering in `resolvePreviewCommentTarget`). */
+  agentCommentsHasUnresolved?: string;
+  agentCommentsHasResolved?: string;
 }
 
 interface RenderedThread {
@@ -240,7 +257,7 @@ export class AgentCommentsController implements vscode.Disposable {
    * dropped from the gutter/editor as soon as they're resolved (still reachable via the sidebar);
    * when off, they render alongside live comments, sourced from the archive on every re-render. */
   private hideResolvedComments(): boolean {
-    return vscode.workspace.getConfiguration('agenticComments').get<boolean>('editor.hideResolvedComments', true);
+    return hideResolvedCommentsEnabled();
   }
 
   private syncThreads(document: vscode.TextDocument, filePath: string, comments: StoredComment[]): void {
@@ -511,6 +528,21 @@ export class AgentCommentsController implements vscode.Disposable {
    * media/preview.js set on the right-clicked block, plus keys core adds itself. */
   private static readonly PREVIEW_INPUT_MAX = 60;
 
+  /** Opens the source .md a preview action's forwarded URI points at — "which source file is this
+   * preview showing", the same heuristic every preview-originated command reuses (the URI comes
+   * straight from the preview's own embedded settings via preview.js, no guessing involved).
+   * `source` must already be validated as a string by the caller, since each command has its own
+   * combined-validation message for "the payload didn't have enough to act on" — this only owns
+   * the scheme check. */
+  private async openPreviewSourceDocument(source: string): Promise<vscode.TextDocument | undefined> {
+    const uri = vscode.Uri.parse(source);
+    if (uri.scheme !== 'file') {
+      vscode.window.showWarningMessage('Agentic Comments: previews of unsaved or virtual documents can\'t be commented on.');
+      return undefined;
+    }
+    return vscode.workspace.openTextDocument(uri);
+  }
+
   /** Right-click "Add Comment" inside VS Code's built-in Markdown preview. The preview is a webview
    * with no message channel back to us (see media/preview.js), so everything we need arrives as the
    * menu item's forwarded context: the source .md URI and the zero-based source line. Uses an input
@@ -525,14 +557,10 @@ export class AgentCommentsController implements vscode.Disposable {
       );
       return;
     }
-
-    const uri = vscode.Uri.parse(source);
-    if (uri.scheme !== 'file') {
-      vscode.window.showWarningMessage('Agentic Comments: previews of unsaved or virtual documents can\'t be commented on.');
+    const document = await this.openPreviewSourceDocument(source);
+    if (!document) {
       return;
     }
-
-    const document = await vscode.workspace.openTextDocument(uri);
     // data-line is zero-based and can point one past the last line (the preview appends a
     // `data-line="${lineCount}"` sentinel div after the body), so clamp into the document.
     const clamp = (n: number): number => Math.min(Math.max(0, Math.floor(n)), Math.max(0, document.lineCount - 1));
@@ -566,6 +594,134 @@ export class AgentCommentsController implements vscode.Disposable {
 
     const anchor = createAnchor(document, line, end);
     await this.store.addComment(toWorkspaceRelativePath(document.uri), anchor, text.trim(), { type: 'user' });
+  }
+
+  /** Common "which comment does this preview right-click action apply to" resolution, shared by
+   * edit/resolve/reopen/delete-from-preview: resolves the source file the same way every preview
+   * command does, parses the marked block's forwarded comment ids (`commentsMarkdownItPlugin.ts`
+   * set them, preview.js forwarded them), narrows to whichever `isApplicable` accepts, and — per
+   * the addendum's "if a line has multiple comments, prompt with showQuickPick to disambiguate" —
+   * only prompts when more than one candidate remains; a lone candidate acts without asking. */
+  private async resolvePreviewCommentTarget(
+    ctx: PreviewCommentContext | undefined,
+    isApplicable: (c: StoredComment) => boolean,
+    noCandidatesMessage: string
+  ): Promise<{ filePath: string; comment: StoredComment } | undefined> {
+    const source = ctx?.agentCommentsSource;
+    if (typeof source !== 'string') {
+      vscode.window.showWarningMessage(
+        'Agentic Comments: could not tell which file that preview was showing — try right-clicking directly on the marked text.'
+      );
+      return undefined;
+    }
+    const document = await this.openPreviewSourceDocument(source);
+    if (!document) {
+      return undefined;
+    }
+    const ids = (ctx?.agentCommentsCommentIds ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (ids.length === 0) {
+      vscode.window.showWarningMessage(
+        'Agentic Comments: could not tell which comment that was — try right-clicking directly on the marked text.'
+      );
+      return undefined;
+    }
+
+    const filePath = toWorkspaceRelativePath(document.uri);
+    const data = await this.store.loadFile(filePath);
+    const archived = await this.store.getArchivedComments(filePath);
+    const candidates = [...data.comments, ...archived].filter((c) => ids.includes(c.id) && isApplicable(c));
+    if (candidates.length === 0) {
+      vscode.window.showInformationMessage(noCandidatesMessage);
+      return undefined;
+    }
+    if (candidates.length === 1) {
+      return { filePath, comment: candidates[0] };
+    }
+
+    const picked = await vscode.window.showQuickPick(
+      candidates.map((c) => ({
+        label: truncate(c.text),
+        description: `${c.author.type === 'user' ? 'You' : 'Agent'} · ${
+          c.status === 'resolved' ? `resolved by ${c.resolvedBy?.type ?? 'unknown'}` : 'unresolved'
+        }`,
+        comment: c,
+      })),
+      { title: 'Agentic Comments', placeHolder: 'Which comment?' }
+    );
+    return picked ? { filePath, comment: picked.comment } : undefined;
+  }
+
+  /** Right-click "Edit" on a marked block in the preview. There's no live `CommentThread`/textarea
+   * in a webview to flip into edit mode (that's what the gutter's `editComment`/`saveComment` do),
+   * so this uses an input box instead — same pattern as `addCommentFromPreview` — over the shared
+   * `updateCommentText` primitive `saveComment` itself ultimately calls. That primitive only ever
+   * looks at live (unresolved) comments, so edit is unresolved-only here too. */
+  async editCommentFromPreview(ctx?: PreviewCommentContext): Promise<void> {
+    const target = await this.resolvePreviewCommentTarget(
+      ctx,
+      (c) => c.status === 'unresolved',
+      'Agentic Comments: nothing to edit there — every comment on that block is already resolved.'
+    );
+    if (!target) {
+      return;
+    }
+    const text = await vscode.window.showInputBox({
+      title: 'Edit Comment',
+      value: target.comment.text,
+      prompt: 'Edit comment…',
+    });
+    if (!text?.trim()) {
+      return;
+    }
+    const saved = await this.store.updateCommentText(target.filePath, target.comment.id, text.trim());
+    if (!saved) {
+      vscode.window.showWarningMessage('Agentic Comments: could not save — this comment was resolved or deleted elsewhere.');
+    }
+  }
+
+  /** Right-click "Resolve" on a marked block in the preview — same `store.resolveComment` the
+   * gutter's Resolve button and the sidebar's inline Resolve action already call. */
+  async resolveCommentFromPreview(ctx?: PreviewCommentContext): Promise<void> {
+    const target = await this.resolvePreviewCommentTarget(
+      ctx,
+      (c) => c.status === 'unresolved',
+      'Agentic Comments: nothing to resolve there — every comment on that block is already resolved.'
+    );
+    if (!target) {
+      return;
+    }
+    await this.store.resolveComment(target.filePath, target.comment.id, { type: 'user' });
+  }
+
+  /** Right-click "Reopen" on a marked block in the preview — same `store.reopenComment` the
+   * gutter's Reopen button and the sidebar's inline Reopen action already call. Not named in the
+   * preview-actions addendum, but added for the same reason resolve/reopen are a pair everywhere
+   * else in this codebase: without it, a resolved comment shown in the preview (hideResolvedComments
+   * off) would have no way back to unresolved except leaving the preview. */
+  async reopenCommentFromPreview(ctx?: PreviewCommentContext): Promise<void> {
+    const target = await this.resolvePreviewCommentTarget(
+      ctx,
+      (c) => c.status === 'resolved',
+      'Agentic Comments: nothing to reopen there — every comment on that block is still unresolved.'
+    );
+    if (!target) {
+      return;
+    }
+    await this.store.reopenComment(target.filePath, target.comment.id);
+  }
+
+  /** Right-click "Delete" on a marked block in the preview — same `store.deleteComment` the
+   * gutter's Delete button and the sidebar's inline Delete action already call. Unlike resolve/edit,
+   * applies to a comment in any status (deleteComment itself checks both live and archived). */
+  async deleteCommentFromPreview(ctx?: PreviewCommentContext): Promise<void> {
+    const target = await this.resolvePreviewCommentTarget(ctx, () => true, 'Agentic Comments: could not tell which comment to delete.');
+    if (!target) {
+      return;
+    }
+    await this.store.deleteComment(target.filePath, target.comment.id);
   }
 
   async resolveThread(thread: vscode.CommentThread | undefined, resolvedByType: AuthorType): Promise<void> {

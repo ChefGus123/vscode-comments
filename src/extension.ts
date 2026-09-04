@@ -4,6 +4,9 @@ import { AgentCommentsController } from './comments/controller';
 import { AgentCommentsTreeProvider, CommentNode } from './ui/treeView';
 import { AgentCommentsDecorationProvider } from './ui/decorations';
 import { AgentCommentsMcpServer, AUTH_HEADER } from './mcp/server';
+import { createCommentsMarkdownItPlugin, MdInstance } from './preview/commentsMarkdownItPlugin';
+
+const PREVIEW_REFRESH_DEBOUNCE_MS = 250;
 
 function wrapCommand<Args extends unknown[]>(
   name: string,
@@ -19,7 +22,9 @@ function wrapCommand<Args extends unknown[]>(
   };
 }
 
-export async function activate(context: vscode.ExtensionContext): Promise<void> {
+export async function activate(
+  context: vscode.ExtensionContext
+): Promise<{ extendMarkdownIt(md: MdInstance): MdInstance } | void> {
   if (!context.storageUri) {
     vscode.window.showWarningMessage(
       'Agentic Comments: open a folder/workspace to use inline comments (no storage location without one).'
@@ -106,6 +111,30 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       )
     ),
     vscode.commands.registerCommand(
+      'agentComments.editCommentFromPreview',
+      wrapCommand('editCommentFromPreview', (ctx?: Parameters<typeof controller.editCommentFromPreview>[0]) =>
+        controller.editCommentFromPreview(ctx)
+      )
+    ),
+    vscode.commands.registerCommand(
+      'agentComments.resolveCommentFromPreview',
+      wrapCommand('resolveCommentFromPreview', (ctx?: Parameters<typeof controller.resolveCommentFromPreview>[0]) =>
+        controller.resolveCommentFromPreview(ctx)
+      )
+    ),
+    vscode.commands.registerCommand(
+      'agentComments.reopenCommentFromPreview',
+      wrapCommand('reopenCommentFromPreview', (ctx?: Parameters<typeof controller.reopenCommentFromPreview>[0]) =>
+        controller.reopenCommentFromPreview(ctx)
+      )
+    ),
+    vscode.commands.registerCommand(
+      'agentComments.deleteCommentFromPreview',
+      wrapCommand('deleteCommentFromPreview', (ctx?: Parameters<typeof controller.deleteCommentFromPreview>[0]) =>
+        controller.deleteCommentFromPreview(ctx)
+      )
+    ),
+    vscode.commands.registerCommand(
       'agentComments.refreshTree',
       wrapCommand('refreshTree', () => treeProvider.refresh())
     ),
@@ -150,6 +179,38 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       })
     )
   );
+
+  // Adding/editing/resolving/reopening/deleting a comment never changes the .md file's own text,
+  // so VS Code's built-in preview has no native trigger to re-render when one happens — without
+  // this, the markdown-it plugin's markers would go stale the moment a comment is acted on from
+  // anywhere else (gutter, sidebar, MCP). Debounced since a single user action or an agent's batch
+  // of MCP calls can fire several change events in quick succession.
+  let previewRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+  context.subscriptions.push(
+    store.onDidChangeFile(() => {
+      if (previewRefreshTimer) {
+        clearTimeout(previewRefreshTimer);
+      }
+      previewRefreshTimer = setTimeout(() => {
+        previewRefreshTimer = undefined;
+        void vscode.commands.executeCommand('markdown.preview.refresh');
+      }, PREVIEW_REFRESH_DEBOUNCE_MS);
+    }),
+    {
+      dispose: () => {
+        if (previewRefreshTimer) {
+          clearTimeout(previewRefreshTimer);
+        }
+      },
+    }
+  );
+
+  const commentsMarkdownItPlugin = createCommentsMarkdownItPlugin(store, () => {
+    void vscode.commands.executeCommand('markdown.preview.refresh');
+  });
+  return {
+    extendMarkdownIt: (md) => commentsMarkdownItPlugin(md),
+  };
 }
 
 export function deactivate(): void {

@@ -353,6 +353,8 @@ export const window = {
   showInformationMessage: jest.fn(async (..._args: unknown[]) => undefined as string | undefined),
   /** Defaults to undefined — i.e. the user dismissed the box with Esc. */
   showInputBox: jest.fn(async (_options?: unknown) => undefined as string | undefined),
+  /** Defaults to undefined — i.e. the user dismissed the picker with Esc. */
+  showQuickPick: jest.fn(async (_items?: unknown, _options?: unknown) => undefined as unknown),
 
   onDidChangeVisibleTextEditors: _emitters.didChangeVisibleTextEditors.event,
 

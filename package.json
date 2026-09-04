@@ -126,10 +126,38 @@
         "command": "agentComments.addCommentFromPreview",
         "title": "Add Comment",
         "category": "Agentic Comments"
+      },
+      {
+        "command": "agentComments.editCommentFromPreview",
+        "title": "Edit Comment",
+        "category": "Agentic Comments",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "agentComments.resolveCommentFromPreview",
+        "title": "Resolve Comment",
+        "category": "Agentic Comments",
+        "icon": "$(check)"
+      },
+      {
+        "command": "agentComments.reopenCommentFromPreview",
+        "title": "Reopen Comment",
+        "category": "Agentic Comments",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "agentComments.deleteCommentFromPreview",
+        "title": "Delete Comment",
+        "category": "Agentic Comments",
+        "icon": "$(trash)"
       }
     ],
+    "markdown.markdownItPlugins": true,
     "markdown.previewScripts": [
       "./media/preview.js"
+    ],
+    "markdown.previewStyles": [
+      "./media/preview.css"
     ],
     "menus": {
       "commandPalette": [
@@ -180,6 +208,22 @@
         {
           "command": "agentComments.addCommentFromPreview",
           "when": "false"
+        },
+        {
+          "command": "agentComments.editCommentFromPreview",
+          "when": "false"
+        },
+        {
+          "command": "agentComments.resolveCommentFromPreview",
+          "when": "false"
+        },
+        {
+          "command": "agentComments.reopenCommentFromPreview",
+          "when": "false"
+        },
+        {
+          "command": "agentComments.deleteCommentFromPreview",
+          "when": "false"
         }
       ],
       "webview/context": [
@@ -187,6 +231,26 @@
           "command": "agentComments.addCommentFromPreview",
           "group": "9_comment",
           "when": "webviewSection == 'agentCommentsPreviewTarget'"
+        },
+        {
+          "command": "agentComments.editCommentFromPreview",
+          "group": "9_comment_actions",
+          "when": "webviewSection == 'agentCommentsPreviewTarget' && agentCommentsCommentIds != '' && agentCommentsHasUnresolved == 'true'"
+        },
+        {
+          "command": "agentComments.resolveCommentFromPreview",
+          "group": "9_comment_actions",
+          "when": "webviewSection == 'agentCommentsPreviewTarget' && agentCommentsCommentIds != '' && agentCommentsHasUnresolved == 'true'"
+        },
+        {
+          "command": "agentComments.reopenCommentFromPreview",
+          "group": "9_comment_actions",
+          "when": "webviewSection == 'agentCommentsPreviewTarget' && agentCommentsCommentIds != '' && agentCommentsHasResolved == 'true'"
+        },
+        {
+          "command": "agentComments.deleteCommentFromPreview",
+          "group": "9_comment_actions",
+          "when": "webviewSection == 'agentCommentsPreviewTarget' && agentCommentsCommentIds != ''"
         }
       ],
       "editor/context": [

@@ -176,8 +176,98 @@
 				agentCommentsLine: line,
 				agentCommentsEndLine: endLine,
 				agentCommentsSelection: selectedText,
+				// `commentsMarkdownItPlugin.ts` set these on the same element (it's the same block
+				// token core tags with `code-line`/`data-line`) when the block has comments — absent
+				// otherwise. Forwarded as-is so the edit/resolve/reopen/delete menu items' `when`
+				// clauses can gate on them.
+				agentCommentsCommentIds: host.dataset.agentCommentIds || '',
+				agentCommentsHasUnresolved: host.dataset.agentCommentHasUnresolved || 'false',
+				agentCommentsHasResolved: host.dataset.agentCommentHasResolved || 'false',
 			});
 		},
 		true
 	);
+
+	// Click-to-expand: shows comment text directly in the preview, in place, without navigating to
+	// the source file. Independent of the real gutter's collapsed/expanded state — this extension
+	// doesn't persist that anywhere, and there's no live CommentThread widget to embed in a webview
+	// anyway — so this is its own lightweight panel with its own local expand/collapse state.
+	//
+	// The panel is appended to <body> and positioned over the clicked line, rather than inserted as
+	// a child/sibling of the marked element itself: a marked block can be a <p>, <li>, <td>, or
+	// heading, none of which can validly contain (or sit next to, inside their own parent) an
+	// arbitrary block-level child — the browser would silently renormalize the DOM in ways that are
+	// hard to predict. Only one panel is open at a time.
+	let openPanel = null;
+	let openHost = null;
+
+	function closePanel() {
+		if (openPanel) {
+			openPanel.remove();
+		}
+		if (openHost) {
+			openHost.classList.remove('agent-comment-expanded');
+		}
+		openPanel = null;
+		openHost = null;
+	}
+
+	function buildPanel(entries) {
+		const panel = document.createElement('div');
+		panel.className = 'agent-comment-panel';
+		for (const c of entries) {
+			const row = document.createElement('div');
+			row.className = 'agent-comment-panel-entry agent-comment-authors-' + c.author;
+			const dot = document.createElement('span');
+			dot.className = 'agent-comment-dot';
+			const who = document.createElement('span');
+			who.className = 'agent-comment-panel-author';
+			who.textContent = c.author === 'user' ? 'You' : 'Agent';
+			if (c.status === 'resolved') {
+				who.textContent += ' · resolved by ' + (c.resolvedBy === 'user' ? 'you' : 'agent');
+			}
+			const text = document.createElement('span');
+			text.className = 'agent-comment-panel-text';
+			text.textContent = c.text;
+			row.append(dot, who, text);
+			panel.appendChild(row);
+		}
+		return panel;
+	}
+
+	document.addEventListener('click', function (e) {
+		if (e.target.closest('a')) {
+			return; // don't hijack normal link navigation
+		}
+		const sel = window.getSelection();
+		if (sel && !sel.isCollapsed && String(sel).length > 0) {
+			return; // the user was selecting text, not asking to expand
+		}
+		const host = e.target.closest('.agent-comment-line');
+		if (!host || host === openHost) {
+			closePanel();
+			return;
+		}
+		closePanel();
+		let entries;
+		try {
+			entries = JSON.parse(host.dataset.agentCommentsJson || '[]');
+		} catch (err) {
+			entries = [];
+		}
+		const panel = buildPanel(entries);
+		const rect = host.getBoundingClientRect();
+		panel.style.position = 'fixed';
+		panel.style.left = Math.max(4, rect.left) + 'px';
+		panel.style.top = rect.bottom + 'px';
+		panel.style.width = Math.max(240, Math.min(rect.width, 480)) + 'px';
+		document.body.appendChild(panel);
+		host.classList.add('agent-comment-expanded');
+		openPanel = panel;
+		openHost = host;
+	});
+
+	// Fixed positioning tracks the viewport, not the scrolled preview content — close on scroll
+	// rather than let it drift away from the line it was opened for.
+	window.addEventListener('scroll', closePanel, true);
 })();

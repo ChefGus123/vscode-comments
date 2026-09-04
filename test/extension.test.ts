@@ -134,6 +134,26 @@ describe('registered commands delegate to the right collaborator', () => {
     await Promise.all(context.subscriptions.map((d) => d.dispose()));
   });
 
+  it('editCommentFromPreview / resolveCommentFromPreview / reopenCommentFromPreview / deleteCommentFromPreview forward the webview context object to the controller', async () => {
+    const context = await activateNormally();
+    const editSpy = jest.spyOn(AgentCommentsController.prototype, 'editCommentFromPreview').mockResolvedValue(undefined);
+    const resolveSpy = jest.spyOn(AgentCommentsController.prototype, 'resolveCommentFromPreview').mockResolvedValue(undefined);
+    const reopenSpy = jest.spyOn(AgentCommentsController.prototype, 'reopenCommentFromPreview').mockResolvedValue(undefined);
+    const deleteSpy = jest.spyOn(AgentCommentsController.prototype, 'deleteCommentFromPreview').mockResolvedValue(undefined);
+    const ctx = { agentCommentsSource: 'file:///repo/a.md', agentCommentsCommentIds: 'c1' };
+
+    await commandHandler('agentComments.editCommentFromPreview')(ctx);
+    await commandHandler('agentComments.resolveCommentFromPreview')(ctx);
+    await commandHandler('agentComments.reopenCommentFromPreview')(ctx);
+    await commandHandler('agentComments.deleteCommentFromPreview')(ctx);
+
+    expect(editSpy).toHaveBeenCalledWith(ctx);
+    expect(resolveSpy).toHaveBeenCalledWith(ctx);
+    expect(reopenSpy).toHaveBeenCalledWith(ctx);
+    expect(deleteSpy).toHaveBeenCalledWith(ctx);
+    await Promise.all(context.subscriptions.map((d) => d.dispose()));
+  });
+
   it('editComment / saveComment / cancelEditComment delegate to the controller', async () => {
     const context = await activateNormally();
     commandHandler('agentComments.editComment')(undefined);
@@ -194,6 +214,62 @@ describe('registered commands delegate to the right collaborator', () => {
     expect(clearAllSpy).toHaveBeenCalledTimes(1);
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(expect.stringContaining('cleared'));
     await Promise.all(context.subscriptions.map((d) => d.dispose()));
+  });
+});
+
+describe('markdown preview integration', () => {
+  it('returns extendMarkdownIt, which registers a core rule that warms a cold cache and calls markdown.preview.refresh once it resolves', async () => {
+    vscode.workspace.workspaceFolders = [{ uri: repoUri, name: 'repo', index: 0 }];
+    const context = makeContext(vscode.Uri.file('/storage'));
+    await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(repoUri, 'a.md'), Buffer.from('one', 'utf8'));
+    const result = await activate(context);
+    expect(result?.extendMarkdownIt).toBeInstanceOf(Function);
+
+    let rule: ((state: { env: Record<string, unknown>; tokens: unknown[] }) => void) | undefined;
+    const md = { core: { ruler: { push: (_name: string, fn: typeof rule) => { rule = fn; } } } };
+    result!.extendMarkdownIt!(md as never);
+    expect(rule).toBeInstanceOf(Function);
+
+    const executeCommandSpy = vscode.commands.executeCommand as jest.Mock;
+    executeCommandSpy.mockClear();
+    rule!({ env: { currentDocument: vscode.Uri.joinPath(repoUri, 'a.md') }, tokens: [] });
+
+    for (let i = 0; i < 20; i++) {
+      await Promise.resolve();
+    }
+    expect(executeCommandSpy).toHaveBeenCalledWith('markdown.preview.refresh');
+    await Promise.all(context.subscriptions.map((d) => d.dispose()));
+  });
+
+  it('debounces markdown.preview.refresh across rapid store changes into one call, and cancels a pending one on dispose', async () => {
+    jest.useFakeTimers();
+    const context = await activateNormally();
+    const uri = vscode.Uri.joinPath(repoUri, 'a.md');
+    await vscode.workspace.fs.writeFile(uri, Buffer.from('one\ntwo', 'utf8'));
+    const executeCommandSpy = vscode.commands.executeCommand as jest.Mock;
+    executeCommandSpy.mockClear();
+
+    const source = uri.toString();
+    (vscode.window.showInputBox as jest.Mock).mockResolvedValue('first');
+    await commandHandler('agentComments.addCommentFromPreview')({ agentCommentsSource: source, agentCommentsLine: 0 });
+    // A second store change while the first's debounce timer is still pending must reset it
+    // (the `clearTimeout` branch), not queue a second refresh.
+    (vscode.window.showInputBox as jest.Mock).mockResolvedValue('second');
+    await commandHandler('agentComments.addCommentFromPreview')({ agentCommentsSource: source, agentCommentsLine: 1 });
+
+    jest.advanceTimersByTime(300);
+    expect(executeCommandSpy).toHaveBeenCalledTimes(1);
+    expect(executeCommandSpy).toHaveBeenCalledWith('markdown.preview.refresh');
+
+    // A pending timer at dispose time must be cancelled, not left to fire after teardown.
+    executeCommandSpy.mockClear();
+    (vscode.window.showInputBox as jest.Mock).mockResolvedValue('third');
+    await commandHandler('agentComments.addCommentFromPreview')({ agentCommentsSource: source, agentCommentsLine: 0 });
+    await Promise.all(context.subscriptions.map((d) => d.dispose()));
+    jest.advanceTimersByTime(300);
+    expect(executeCommandSpy).not.toHaveBeenCalled();
+
+    jest.useRealTimers();
   });
 });
 
