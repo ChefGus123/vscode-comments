@@ -234,7 +234,12 @@ export function createCommentsMarkdownItPlugin(
         const end = Math.max(start, c.anchor.endLineHint - 1);
         return { id: c.id, start, end };
       });
+      console.error(
+        'Agentic Comments [DEBUG]: blocks and spans',
+        JSON.stringify({ blocks, spans, tokenTypes: state.tokens.map((t) => (t as unknown as { type?: string }).type) })
+      );
       const matches = matchCommentsToBlocks(blocks, spans);
+      console.error('Agentic Comments [DEBUG]: matches', JSON.stringify({ matchCount: matches.size, matches: [...matches.entries()] }));
       if (matches.size === 0) {
         return;
       }
