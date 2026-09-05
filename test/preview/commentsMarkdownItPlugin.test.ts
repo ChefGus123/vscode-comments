@@ -104,7 +104,7 @@ describe('createCommentsMarkdownItPlugin', () => {
   class FakeToken {
     attrs: Record<string, string> = {};
     private classes: string[] = [];
-    constructor(public map: [number, number] | null) {}
+    constructor(public map: [number, number] | null, public type: string = 'paragraph_open') {}
     attrJoin(name: string, value: string): void {
       if (name === 'class') {
         this.classes.push(value);
@@ -278,6 +278,28 @@ describe('createCommentsMarkdownItPlugin', () => {
     const parsed = JSON.parse(tokens[1].attrs['data-agent-comments-json']);
     expect(parsed).toEqual([{ id: expect.any(String), author: 'agent', status: 'unresolved', text: 'looks off' }]);
     expect(tokens[1].attrs.title).toContain('looks off');
+  });
+
+  it('marks the paragraph_open token, not its inline child, even though both share the exact same map (regression: markdown-it renders inline tokens by their .children and never reads their own .attrs)', async () => {
+    const store = new CommentStore(storageUri);
+    await store.initialize();
+    await store.addComment(
+      filePath,
+      { lineHint: 1, endLineHint: 1, contentHash: 'h', contextBefore: '', contextAfter: '', status: 'exact' },
+      'hi',
+      { type: 'user' }
+    );
+    await store.loadFile(filePath);
+
+    const rule = installRule(store, jest.fn());
+    // Exactly what a real paragraph produces: paragraph_open and its inline child share [0, 1).
+    const paragraphOpen = new FakeToken([0, 1], 'paragraph_open');
+    const inline = new FakeToken([0, 1], 'inline');
+    const paragraphClose = new FakeToken(null, 'paragraph_close');
+    rule({ env: { currentDocument: vscode.Uri.joinPath(repoUri, filePath) }, tokens: [paragraphOpen, inline, paragraphClose] });
+
+    expect(paragraphOpen.attrs.class).toContain('agent-comment-line');
+    expect(inline.attrs).toEqual({});
   });
 
   it('skips a token with no source map when locating comment blocks, and falls back to "unknown" resolver in the title', async () => {

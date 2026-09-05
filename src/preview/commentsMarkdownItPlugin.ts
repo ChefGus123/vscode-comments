@@ -10,6 +10,7 @@ import { AuthorType, StoredComment } from '../types';
  * hands `extendMarkdownIt` a live instance built from the real library at runtime, so this only
  * needs to describe the handful of members we actually call, not the whole library. */
 interface MdToken {
+  type: string;
   map: [number, number] | null;
   attrJoin(name: string, value: string): void;
   attrSet(name: string, value: string): void;
@@ -197,25 +198,12 @@ export function createCommentsMarkdownItPlugin(
     md.core.ruler.push('agent_comments_preview_markers', (state) => {
       const envDocument = (state.env as { currentDocument?: vscode.Uri }).currentDocument;
       const currentDocument = envDocument ?? getFallbackDocumentUri();
-      console.error(
-        'Agentic Comments [DEBUG]: core rule fired',
-        JSON.stringify({
-          envDocument: envDocument?.toString(),
-          usedFallback: !envDocument && !!currentDocument,
-          currentDocument: currentDocument?.toString(),
-          tokenCount: state.tokens.length,
-        })
-      );
       if (!currentDocument) {
         return;
       }
       const filePath = toWorkspaceRelativePath(currentDocument);
       const includeResolved = !hideResolvedCommentsEnabled();
       const { live, archived } = store.peekCachedComments(filePath);
-      console.error(
-        'Agentic Comments [DEBUG]: cache state',
-        JSON.stringify({ filePath, liveCount: live?.length, archivedCount: archived?.length, includeResolved })
-      );
       if (live === undefined || (includeResolved && archived === undefined)) {
         warm(filePath, includeResolved);
         return;
@@ -228,18 +216,18 @@ export function createCommentsMarkdownItPlugin(
         return;
       }
 
-      const blocks: (BlockRange | null)[] = state.tokens.map((t) => (t.map ? { start: t.map[0], end: t.map[1] } : null));
+      // `inline` tokens inherit their exact `.map` range from their immediate parent block token
+      // (e.g. paragraph_open and its inline child always share the same map) — but markdown-it's
+      // renderer special-cases `type === 'inline'` to render its `.children` directly and never
+      // reads the inline token's own `.attrs`, so attrJoin/attrSet on one is silently a no-op.
+      // Excluded here so a same-width tie with its parent never resolves in its favor.
+      const blocks: (BlockRange | null)[] = state.tokens.map((t) => (t.map && t.type !== 'inline' ? { start: t.map[0], end: t.map[1] } : null));
       const spans: CommentLineSpan[] = comments.map((c) => {
         const start = c.anchor.lineHint - 1;
         const end = Math.max(start, c.anchor.endLineHint - 1);
         return { id: c.id, start, end };
       });
-      console.error(
-        'Agentic Comments [DEBUG]: blocks and spans',
-        JSON.stringify({ blocks, spans, tokenTypes: state.tokens.map((t) => (t as unknown as { type?: string }).type) })
-      );
       const matches = matchCommentsToBlocks(blocks, spans);
-      console.error('Agentic Comments [DEBUG]: matches', JSON.stringify({ matchCount: matches.size, matches: [...matches.entries()] }));
       if (matches.size === 0) {
         return;
       }
