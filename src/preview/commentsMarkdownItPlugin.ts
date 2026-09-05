@@ -181,14 +181,27 @@ export function createCommentsMarkdownItPlugin(store: CommentStore, onNeedsRefre
   }
 
   return (md) => {
+    console.error('Agentic Comments [DEBUG]: extendMarkdownIt plugin registered, md.core.ruler.push about to run');
     md.core.ruler.push('agent_comments_preview_markers', (state) => {
       const currentDocument = (state.env as { currentDocument?: vscode.Uri }).currentDocument;
+      console.error(
+        'Agentic Comments [DEBUG]: core rule fired',
+        JSON.stringify({
+          envKeys: Object.keys(state.env ?? {}),
+          currentDocument: currentDocument?.toString(),
+          tokenCount: state.tokens.length,
+        })
+      );
       if (!currentDocument) {
         return;
       }
       const filePath = toWorkspaceRelativePath(currentDocument);
       const includeResolved = !hideResolvedCommentsEnabled();
       const { live, archived } = store.peekCachedComments(filePath);
+      console.error(
+        'Agentic Comments [DEBUG]: cache state',
+        JSON.stringify({ filePath, liveCount: live?.length, archivedCount: archived?.length, includeResolved })
+      );
       if (live === undefined || (includeResolved && archived === undefined)) {
         warm(filePath, includeResolved);
         return;
