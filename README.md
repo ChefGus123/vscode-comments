@@ -17,7 +17,7 @@ Leave GitHub-style inline review comments on your live code, and let AI coding a
 
 - **Inline comments, right in the gutter** — hover any line for the native "+", or right-click a line/selection → **Add Comment**. One message per comment, no reply threads to manage.
 - **Comment on rendered Markdown** — right-click any block in VS Code's built-in Markdown preview → **Add Comment**, and it anchors to the matching line of the source `.md`. Select across several blocks first and the comment covers the whole span; the input box tells you which lines it captured before you type. Review a doc the way you'd read it, not as raw syntax.
-- **See and act on comments right in the preview** — a block with a comment gets a small author-colored dot (same colors as the gutter), click it to expand the comment text in place, right-click to Edit/Resolve/Reopen/Delete without leaving the preview or opening the source file.
+- **See and act on comments right in the preview** — a block with a comment gets a small author-colored badge floating just above it (same colors as the gutter; the count if there's more than one) that never touches your document's layout. Click it to expand the comment text in place; right-click a specific comment in that panel to Edit/Resolve/Reopen/Delete it directly — no picking from a list.
 - **Comments survive edits** — anchored by content hash plus surrounding context, not just a line number. As code shifts, a comment stays `exact`, degrades to `approximate` (relocated nearby), or is flagged `orphaned` if the code is gone — never silently deleted or hidden. An orphaned comment stays frozen where it was last confidently placed, and always shows the original code snippet it was about, so it never gets impossible to recognize.
 - **Built for agents, not just humans** — an in-process MCP server exposes your comments as structured tools (list, fetch, create, resolve), so an agent can pull exactly what's unresolved in a file or across the whole workspace instead of you re-explaining it in chat.
 - **User vs. agent, at a glance** — blue author icon for comments you wrote, red for ones an agent left; resolved comments carry a "resolved by user/agent" tag.
@@ -65,7 +65,7 @@ Every response flags comments whose anchor isn't exact (`locationUncertain: true
 ## Release Notes
 
 ### 0.4.5
-- **The preview now shows comments too.** A commented-on block gets a small author-colored dot (blue for you, red for an agent) — click it to read the comment in place, right-click for Edit/Resolve/Reopen/Delete. Respects the resolved-comments setting below, and stays live as comments are added or changed anywhere else (gutter, sidebar, an agent's MCP call).
+- **The preview now shows comments too.** A commented-on block gets a small author-colored badge (blue for you, red for an agent) floating just above it — it never touches your document's layout, even inside tables — with the count inside it when there's more than one. Click it to read the comment(s) in place; right-click a specific comment in that panel for Edit/Resolve/Reopen/Delete, no picking from a list. Respects the resolved-comments setting below, and stays live as comments are added or changed anywhere else (gutter, sidebar, an agent's MCP call).
 
 ### 0.4.0
 - **Comment on rendered Markdown.** Right-click any block in VS Code's built-in Markdown preview → **Add Comment**, and it anchors to the matching line of the source `.md`. Review a doc the way you read it, not as raw syntax.

@@ -53,9 +53,10 @@ export interface CommentLineSpan {
  * child's.
  *
  * If no single block fully contains the comment (it spans multiple sibling blocks — e.g. a
- * multi-paragraph selection anchored from the gutter), falls back to marking every block it
- * overlaps that isn't itself a container of another overlapping block for that same comment, so a
- * multi-block comment doesn't also redundantly mark its own ancestor.
+ * multi-paragraph selection anchored from the gutter), it's marked once, on the earliest-starting
+ * of the blocks it overlaps that isn't itself a container of another overlapping block for that
+ * same comment — one marker for the whole span, not one per block it touches (a comment covering
+ * a table's rows or a list's items would otherwise paint a marker on every single one of them).
  *
  * Pure and markdown-it-free so it can be unit tested directly. */
 export function matchCommentsToBlocks(
@@ -96,13 +97,21 @@ export function matchCommentsToBlocks(
     const overlapping = blocks
       .map((b, i) => ({ b, i }))
       .filter((x): x is { b: BlockRange; i: number } => x.b !== null && x.b.start <= comment.end && comment.start < x.b.end);
-    for (const { b, i } of overlapping) {
-      const isAncestorOfAnother = overlapping.some(
-        ({ b: other, i: j }) => j !== i && other.start >= b.start && other.end <= b.end && (other.start > b.start || other.end < b.end)
-      );
-      if (!isAncestorOfAnother) {
-        addMatch(i, comment.id);
+    const leaves = overlapping.filter(
+      ({ b, i }) =>
+        !overlapping.some(({ b: other, i: j }) => j !== i && other.start >= b.start && other.end <= b.end && (other.start > b.start || other.end < b.end))
+    );
+    // A single marker for the whole span, not one per block it touches — placed on the
+    // earliest-starting leaf block, so a comment covering many short blocks (a table's rows, a
+    // list's items) doesn't paint a marker on every one of them.
+    let first = leaves[0];
+    for (const leaf of leaves) {
+      if (leaf.b.start < first.b.start || (leaf.b.start === first.b.start && leaf.i < first.i)) {
+        first = leaf;
       }
+    }
+    if (first) {
+      addMatch(first.i, comment.id);
     }
   }
 

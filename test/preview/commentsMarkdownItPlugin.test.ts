@@ -66,35 +66,34 @@ describe('matchCommentsToBlocks', () => {
     expect(result).toEqual(new Map([[0, ['c1', 'c2']]]));
   });
 
-  it('falls back to every top-level sibling block a multi-block comment overlaps, when nothing contains it', () => {
+  it('marks only the earliest-starting sibling block a multi-block comment overlaps, when nothing contains it', () => {
     // Two adjacent top-level paragraphs (0-2, 2-4) with no wrapping container token at all — a
-    // gutter multi-block selection spanning both has no single containing block.
+    // gutter multi-block selection spanning both has no single containing block. One marker for
+    // the whole span, not one per block it touches.
     const blocks: (BlockRange | null)[] = [{ start: 0, end: 2 }, { start: 2, end: 4 }];
     const result = matchCommentsToBlocks(blocks, [span('c1', 0, 3)]);
-    expect(result).toEqual(
-      new Map([
-        [0, ['c1']],
-        [1, ['c1']],
-      ])
-    );
+    expect(result).toEqual(new Map([[0, ['c1']]]));
   });
 
-  it('excludes an ancestor container from the fallback set, keeping only the leaf-most overlapping blocks', () => {
+  it('picks the earliest-starting leaf even when it appears later in the token array', () => {
+    // Deliberately out of source order: index 0 starts after index 1.
+    const blocks: (BlockRange | null)[] = [{ start: 2, end: 4 }, { start: 0, end: 2 }];
+    const result = matchCommentsToBlocks(blocks, [span('c1', 0, 3)]);
+    expect(result).toEqual(new Map([[1, ['c1']]]));
+  });
+
+  it('excludes an ancestor container from the fallback candidates before picking the earliest leaf', () => {
     // outerA (0-2) wraps innerA (0-1); siblingB (2-4) is unrelated to outerA/innerA. A comment
-    // spanning 0-3 doesn't fit inside any single block, so it falls back to every overlap — but
-    // outerA should be dropped since innerA (nested inside it) already represents that region.
+    // spanning 0-3 doesn't fit inside any single block — outerA is dropped as a candidate since
+    // innerA (nested inside it) already represents that region, leaving innerA and siblingB; the
+    // earliest-starting of those two (innerA) gets the single marker.
     const blocks: (BlockRange | null)[] = [
       { start: 0, end: 2 }, // outerA
       { start: 0, end: 1 }, // innerA, nested inside outerA
       { start: 2, end: 4 }, // siblingB
     ];
     const result = matchCommentsToBlocks(blocks, [span('c1', 0, 3)]);
-    expect(result).toEqual(
-      new Map([
-        [1, ['c1']],
-        [2, ['c1']],
-      ])
-    );
+    expect(result).toEqual(new Map([[1, ['c1']]]));
   });
 });
 

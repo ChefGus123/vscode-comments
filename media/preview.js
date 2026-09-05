@@ -14,6 +14,9 @@
 	'use strict';
 
 	const SECTION = 'agentCommentsPreviewTarget';
+	// Right-clicking a specific row in the click-to-expand panel (below) acts on just that one
+	// comment — no quickpick needed, since exactly one id is ever in scope for this section.
+	const ROW_SECTION = 'agentCommentsPanelRowTarget';
 	const MAX_SELECTION_CHARS = 200;
 
 	// The preview embeds its own settings, including `source` — the URI of the .md being rendered.
@@ -145,6 +148,25 @@
 			if (!source) {
 				return;
 			}
+
+			// A right-click on a specific comment row inside the expand panel (our own UI, not
+			// rendered markdown content) acts on that one comment directly — skips the block lookup
+			// below entirely, and carries exactly one id, so no disambiguation prompt is needed.
+			const row = e.target.closest('.agent-comment-panel-entry');
+			if (row) {
+				lastHost = row;
+				lastHostPrevious = Object.prototype.hasOwnProperty.call(row.dataset, 'vscodeContext') ? row.dataset.vscodeContext : null;
+				row.dataset.vscodeContext = JSON.stringify({
+					webviewSection: ROW_SECTION,
+					preventDefaultContextMenuItems: false,
+					agentCommentsSource: source,
+					agentCommentsCommentIds: row.dataset.commentId || '',
+					agentCommentsHasUnresolved: row.dataset.commentStatus === 'unresolved' ? 'true' : 'false',
+					agentCommentsHasResolved: row.dataset.commentStatus === 'resolved' ? 'true' : 'false',
+				});
+				return;
+			}
+
 			const host = findCodeLine(e.target);
 			if (!host) {
 				return;
@@ -218,6 +240,9 @@
 		for (const c of entries) {
 			const row = document.createElement('div');
 			row.className = 'agent-comment-panel-entry agent-comment-authors-' + c.author;
+			row.title = 'Right-click for Edit / Resolve / Reopen / Delete';
+			row.dataset.commentId = c.id;
+			row.dataset.commentStatus = c.status;
 			const dot = document.createElement('span');
 			dot.className = 'agent-comment-dot';
 			const who = document.createElement('span');
