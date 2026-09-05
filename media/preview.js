@@ -220,8 +220,19 @@
 	// heading, none of which can validly contain (or sit next to, inside their own parent) an
 	// arbitrary block-level child — the browser would silently renormalize the DOM in ways that are
 	// hard to predict. Only one panel is open at a time.
+	//
+	// Acting on a comment (edit/resolve/reopen/delete) triggers a full markdown.preview.refresh —
+	// every comment changes the store, and any comment's own marker might need to move or vanish, so
+	// this extension always re-renders the whole document rather than trying to patch just one line.
+	// That replaces every rendered element wholesale, including whichever one the open panel was
+	// anchored to — without reconnecting, resolving *one* comment in a multi-comment panel silently
+	// closed the whole panel, hiding every other comment in it too, not just the one that changed.
+	// `openCommentIds` (not just the host element) is what actually identifies "what's open", so a
+	// freshly re-rendered element carrying any of the same ids can be found and the panel reopened
+	// there automatically, showing whatever's left, instead of just disappearing.
 	let openPanel = null;
 	let openHost = null;
+	let openCommentIds = null;
 
 	function closePanel() {
 		if (openPanel) {
@@ -232,6 +243,7 @@
 		}
 		openPanel = null;
 		openHost = null;
+		openCommentIds = null;
 	}
 
 	function buildPanel(entries) {
@@ -260,20 +272,17 @@
 		return panel;
 	}
 
-	document.addEventListener('click', function (e) {
-		if (e.target.closest('a')) {
-			return; // don't hijack normal link navigation
+	function commentIdsOf(host) {
+		return (host.dataset.agentCommentIds || '').split(',').filter(Boolean);
+	}
+
+	function openPanelFor(host) {
+		if (openPanel) {
+			openPanel.remove();
 		}
-		const sel = window.getSelection();
-		if (sel && !sel.isCollapsed && String(sel).length > 0) {
-			return; // the user was selecting text, not asking to expand
+		if (openHost && openHost !== host) {
+			openHost.classList.remove('agent-comment-expanded');
 		}
-		const host = e.target.closest('.agent-comment-line');
-		if (!host || host === openHost) {
-			closePanel();
-			return;
-		}
-		closePanel();
 		let entries;
 		try {
 			entries = JSON.parse(host.dataset.agentCommentsJson || '[]');
@@ -290,6 +299,47 @@
 		host.classList.add('agent-comment-expanded');
 		openPanel = panel;
 		openHost = host;
+		openCommentIds = commentIdsOf(host);
+	}
+
+	// Runs only while a panel is open (each call reschedules itself, so it stops the moment
+	// closePanel clears openPanel) — the one signal previewScripts gives no other way to observe is
+	// "the content just got replaced by a refresh", so this polls for it via the host's own
+	// connectedness rather than instrumenting every call site that can trigger a refresh.
+	function watchForReconnect() {
+		if (!openPanel) {
+			return;
+		}
+		if (openHost && !openHost.isConnected) {
+			const stillPresentIds = openCommentIds;
+			const candidate = [...document.querySelectorAll('.agent-comment-line[data-agent-comment-ids]')].find((el) =>
+				commentIdsOf(el).some((id) => stillPresentIds.includes(id))
+			);
+			if (candidate) {
+				openPanelFor(candidate);
+			} else {
+				closePanel(); // every comment that was open got resolved-and-hidden or deleted
+				return;
+			}
+		}
+		requestAnimationFrame(watchForReconnect);
+	}
+
+	document.addEventListener('click', function (e) {
+		if (e.target.closest('a')) {
+			return; // don't hijack normal link navigation
+		}
+		const sel = window.getSelection();
+		if (sel && !sel.isCollapsed && String(sel).length > 0) {
+			return; // the user was selecting text, not asking to expand
+		}
+		const host = e.target.closest('.agent-comment-line');
+		if (!host || host === openHost) {
+			closePanel();
+			return;
+		}
+		openPanelFor(host);
+		requestAnimationFrame(watchForReconnect);
 	});
 
 	// Fixed positioning tracks the viewport, not the scrolled preview content — close on scroll

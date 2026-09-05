@@ -56,10 +56,12 @@ in scope.
 | # | Do | Expect |
 |---|---|---|
 | 4.1 | Expand a block with **two or more** comments (mixed resolved/unresolved, mixed authors if possible), right-click **one specific row** | Menu shows actions for *only that one comment* — Edit/Resolve appear only if that row is unresolved, Reopen only if it's resolved, Delete always. No **Add Comment** item (that only makes sense on real document content, not our own panel chrome). |
-| 4.2 | **Edit Comment** from a row | Input box opens prefilled with that comment's current text. Change it, submit → gutter/sidebar/panel all reflect the new text for that one comment only. |
-| 4.3 | **Resolve Comment** from a row, panel has other comments still open | Only that row's comment resolves — the others' status is untouched. No quickpick ever appeared. |
-| 4.4 | **Delete Comment** from a resolved row | Permanently removed — gone from sidebar/archive, not just hidden. |
-| 4.5 | Right-click one row, then immediately right-click a **different** row without closing the panel | The second right-click's menu is scoped to the second row's comment, not stale from the first. |
+| 4.2 | **Edit Comment** from a row | Input box opens prefilled with that comment's current text. Change it, submit → **the panel stays open** (reconnects across the resulting refresh) and shows the updated text — it must not silently close. |
+| 4.3 | **Resolve Comment** from a row, panel has **other** comments still open | Only that row's comment resolves — the others' status is untouched, and **the panel stays open** showing the remaining comments (this was the actual reported bug: the whole panel used to vanish, hiding the untouched ones too). |
+| 4.4 | **Delete Comment** from a resolved row, panel has other comments open | That row disappears from the panel; the panel itself stays open with the rest. |
+| 4.5 | **Delete** (or resolve-with-`hideResolvedComments:true`) the **last remaining** comment shown in an open panel | The panel closes cleanly — nothing left to reconnect to, so it shouldn't linger showing stale/empty content. |
+| 4.6 | With a panel open, change a comment on a **different, unrelated** block via the gutter/sidebar/MCP (not through the panel) | The open panel is unaffected — still showing the same comment(s), doesn't flicker or reset, even though the whole preview just re-rendered underneath it. |
+| 4.7 | Right-click one row, then immediately right-click a **different** row without closing the panel | The second right-click's menu is scoped to the second row's comment, not stale from the first. |
 
 ## Right-click actions — block-scoped (fallback path)
 
