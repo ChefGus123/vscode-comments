@@ -158,8 +158,21 @@ function summaryTitle(comments: StoredComment[]): string {
  * `markdown.preview.refresh`) picks the markers up. The same callback is reused by the caller for
  * live comment-store changes — this plugin itself has no way to know a comment changed, since
  * that never touches the document's text, which is the only thing that makes VS Code's preview
- * re-render on its own. */
-export function createCommentsMarkdownItPlugin(store: CommentStore, onNeedsRefresh: () => void): (md: MdInstance) => MdInstance {
+ * re-render on its own.
+ *
+ * `getFallbackDocumentUri` covers a real gap discovered against a live VS Code build:
+ * `env.currentDocument` is only set when the render call was given an actual document object —
+ * some render passes (observed for a preview panel revived after a window/extension reload) pass
+ * a plain markdown string instead, leaving `currentDocument` present as a key but `undefined` as a
+ * value. When that happens, this falls back to whatever the caller reports as the last-focused
+ * Markdown editor (`extension.ts` tracks this via `onDidChangeActiveTextEditor`) — imprecise for a
+ * *locked* preview showing a file other than the active editor, but far better than never
+ * rendering markers at all after any reload with a preview open. */
+export function createCommentsMarkdownItPlugin(
+  store: CommentStore,
+  onNeedsRefresh: () => void,
+  getFallbackDocumentUri: () => vscode.Uri | undefined
+): (md: MdInstance) => MdInstance {
   // Per-file in-flight guard: a cold cache can be hit by more than one render pass before the
   // first warm-up resolves (e.g. a second preview tab for the same file) — without this, each
   // would kick off its own redundant loadFile/getArchivedComments and its own refresh call.
@@ -181,13 +194,14 @@ export function createCommentsMarkdownItPlugin(store: CommentStore, onNeedsRefre
   }
 
   return (md) => {
-    console.error('Agentic Comments [DEBUG]: extendMarkdownIt plugin registered, md.core.ruler.push about to run');
     md.core.ruler.push('agent_comments_preview_markers', (state) => {
-      const currentDocument = (state.env as { currentDocument?: vscode.Uri }).currentDocument;
+      const envDocument = (state.env as { currentDocument?: vscode.Uri }).currentDocument;
+      const currentDocument = envDocument ?? getFallbackDocumentUri();
       console.error(
         'Agentic Comments [DEBUG]: core rule fired',
         JSON.stringify({
-          envKeys: Object.keys(state.env ?? {}),
+          envDocument: envDocument?.toString(),
+          usedFallback: !envDocument && !!currentDocument,
           currentDocument: currentDocument?.toString(),
           tokenCount: state.tokens.length,
         })

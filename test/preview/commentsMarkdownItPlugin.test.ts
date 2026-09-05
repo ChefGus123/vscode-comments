@@ -118,7 +118,11 @@ describe('createCommentsMarkdownItPlugin', () => {
     }
   }
 
-  function installRule(store: CommentStore, onNeedsRefresh: () => void): Parameters<MdInstance['core']['ruler']['push']>[1] {
+  function installRule(
+    store: CommentStore,
+    onNeedsRefresh: () => void,
+    getFallbackDocumentUri: () => vscode.Uri | undefined = () => undefined
+  ): Parameters<MdInstance['core']['ruler']['push']>[1] {
     type Rule = Parameters<MdInstance['core']['ruler']['push']>[1];
     let rule: Rule | undefined;
     const md: MdInstance = {
@@ -130,7 +134,7 @@ describe('createCommentsMarkdownItPlugin', () => {
         },
       },
     };
-    createCommentsMarkdownItPlugin(store, onNeedsRefresh)(md);
+    createCommentsMarkdownItPlugin(store, onNeedsRefresh, getFallbackDocumentUri)(md);
     if (!rule) {
       throw new Error('plugin never registered a core rule');
     }
@@ -141,7 +145,7 @@ describe('createCommentsMarkdownItPlugin', () => {
     vscode.workspace.workspaceFolders = [{ uri: repoUri, name: 'repo', index: 0 }];
   });
 
-  it('does nothing when the render has no current document (a plain-string render)', async () => {
+  it('does nothing when the render has no current document and no fallback is available', async () => {
     const store = new CommentStore(storageUri);
     await store.initialize();
     const loadFileSpy = jest.spyOn(store, 'loadFile');
@@ -153,6 +157,27 @@ describe('createCommentsMarkdownItPlugin', () => {
 
     expect(loadFileSpy).not.toHaveBeenCalled();
     expect(tokens[0].attrs).toEqual({});
+  });
+
+  it('falls back to the last-focused Markdown editor when env.currentDocument is undefined (a plain-string render, e.g. a revived preview panel)', async () => {
+    const store = new CommentStore(storageUri);
+    await store.initialize();
+    await store.addComment(
+      filePath,
+      { lineHint: 1, endLineHint: 1, contentHash: 'h', contextBefore: '', contextAfter: '', status: 'exact' },
+      'hi',
+      { type: 'user' }
+    );
+    await store.loadFile(filePath);
+
+    const fallbackUri = vscode.Uri.joinPath(repoUri, filePath);
+    const rule = installRule(store, jest.fn(), () => fallbackUri);
+    const tokens = [new FakeToken([0, 1])];
+    // No currentDocument in env at all — exactly what was observed against a real VS Code build
+    // for a preview panel revived after a window reload.
+    rule({ env: {}, tokens });
+
+    expect(tokens[0].attrs.class).toContain('agent-comment-line');
   });
 
   it('renders no markers and warms the cache on a cold read, then calls onNeedsRefresh once warm', async () => {

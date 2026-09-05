@@ -205,9 +205,27 @@ export async function activate(
     }
   );
 
-  const commentsMarkdownItPlugin = createCommentsMarkdownItPlugin(store, () => {
-    void vscode.commands.executeCommand('markdown.preview.refresh');
-  });
+  // Fallback for when a render call's `env.currentDocument` is undefined (observed for a preview
+  // panel revived after a window/extension reload, which re-renders from a plain string rather
+  // than a live document) — best-effort "which markdown file is this probably for", tracked the
+  // same way the original (pre-DOM-heuristic) addCommentFromPreview design proposed.
+  let lastActiveMarkdownUri: vscode.Uri | undefined =
+    vscode.window.activeTextEditor?.document.languageId === 'markdown' ? vscode.window.activeTextEditor.document.uri : undefined;
+  context.subscriptions.push(
+    vscode.window.onDidChangeActiveTextEditor((editor) => {
+      if (editor?.document.languageId === 'markdown') {
+        lastActiveMarkdownUri = editor.document.uri;
+      }
+    })
+  );
+
+  const commentsMarkdownItPlugin = createCommentsMarkdownItPlugin(
+    store,
+    () => {
+      void vscode.commands.executeCommand('markdown.preview.refresh');
+    },
+    () => lastActiveMarkdownUri
+  );
   return {
     extendMarkdownIt: (md) => commentsMarkdownItPlugin(md),
   };
