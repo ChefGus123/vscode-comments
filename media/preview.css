@@ -11,19 +11,17 @@
 	--agent-comment-agent: #f14c4c;
 }
 
-.agent-comment-line {
-	position: relative;
-}
-
-/* A single floating badge, positioned outside normal flow entirely — it must never affect layout
- * (a display:inline-block predecessor here pushed table columns and paragraph text around badly).
- * A dot when there's one comment; the count digit(s) when there's more than one — replacing what
- * used to be two separate markers (a leading dot plus a trailing count pill) with one. */
-.agent-comment-line::before {
-	content: '';
+/* `.agent-comment-line` itself carries no styling — it's a plain query-selector hook `preview.js`
+ * uses to find which blocks have comments (see `commentsMarkdownItPlugin.ts`). The visual marker
+ * is a genuinely separate element (`.agent-comment-marker`, built and positioned in `preview.js`),
+ * appended to <body> rather than styled onto the block itself via a pseudo-element. That was tried
+ * first (`::before`, then `position: absolute` on it) and still visibly distorted table layout in
+ * practice — table row/cell positioning has cross-engine quirks that don't show up just from
+ * reasoning about the CSS spec. A marker living entirely outside the table's (or any block's) own
+ * DOM subtree cannot affect its layout, categorically, regardless of how any engine handles
+ * positioning *inside* one. */
+.agent-comment-marker {
 	position: absolute;
-	top: -7px;
-	left: -7px;
 	z-index: 5;
 	box-sizing: border-box;
 	min-width: 14px;
@@ -38,28 +36,23 @@
 	font-weight: 600;
 	color: white;
 	cursor: pointer;
-	pointer-events: auto;
 }
 
-.agent-comment-authors-user::before {
+.agent-comment-marker.agent-comment-authors-user {
 	background: var(--agent-comment-user);
 }
 
-.agent-comment-authors-agent::before {
+.agent-comment-marker.agent-comment-authors-agent {
 	background: var(--agent-comment-agent);
 }
 
 /* Both a user and an agent comment on the same block: a two-tone split rather than picking one
  * color, so neither author's presence is hidden. */
-.agent-comment-authors-agent-user::before {
+.agent-comment-marker.agent-comment-authors-agent-user {
 	background: linear-gradient(135deg, var(--agent-comment-user) 50%, var(--agent-comment-agent) 50%);
 }
 
-.agent-comment-line[data-agent-comment-count]:not([data-agent-comment-count='1'])::before {
-	content: attr(data-agent-comment-count);
-}
-
-.agent-comment-line.agent-comment-expanded::before {
+.agent-comment-marker-expanded {
 	outline: 2px solid var(--vscode-focusBorder, currentColor);
 	outline-offset: 1px;
 }
