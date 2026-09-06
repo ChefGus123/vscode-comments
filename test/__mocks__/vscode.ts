@@ -234,10 +234,19 @@ async function readDirectoryImpl(uri: Uri): Promise<[string, number][]> {
 
 // ---------- TextDocument helper (test-only, but shaped like vscode.TextDocument) ----------
 
+/** Mirrors real VS Code's file-extension-based language inference closely enough for tests that
+ * branch on `languageId` (e.g. tracking the last-focused Markdown editor) — not a general-purpose
+ * language mapping. Some callers pass a minimal `{ toString() }` stand-in instead of a real mock
+ * `Uri` (no `.path`), so this falls back to `.toString()`. */
+function languageIdForUri(uri: { path?: string; toString(): string }): string {
+  return (uri.path ?? uri.toString()).endsWith('.md') ? 'markdown' : 'plaintext';
+}
+
 export function createTextDocument(uri: Uri, content: string) {
   let text = content;
   return {
     uri,
+    languageId: languageIdForUri(uri),
     getText: (): string => text,
     get lineCount(): number {
       return text.split('\n').length;
@@ -273,6 +282,7 @@ export const _emitters = {
   didChangeTextDocument: new EventEmitter<{ document: MockTextDocument; contentChanges: unknown[] }>(),
   didCloseTextDocument: new EventEmitter<MockTextDocument>(),
   didChangeVisibleTextEditors: new EventEmitter<MockTextEditor[]>(),
+  didChangeActiveTextEditor: new EventEmitter<MockTextEditor | undefined>(),
   didChangeConfiguration: new EventEmitter<{ affectsConfiguration(section: string): boolean }>(),
 };
 
@@ -353,13 +363,17 @@ export const window = {
   showInformationMessage: jest.fn(async (..._args: unknown[]) => undefined as string | undefined),
   /** Defaults to undefined — i.e. the user dismissed the box with Esc. */
   showInputBox: jest.fn(async (_options?: unknown) => undefined as string | undefined),
+  /** Defaults to undefined — i.e. the user dismissed the picker with Esc. */
+  showQuickPick: jest.fn(async (_items?: unknown, _options?: unknown) => undefined as unknown),
 
   onDidChangeVisibleTextEditors: _emitters.didChangeVisibleTextEditors.event,
+  onDidChangeActiveTextEditor: _emitters.didChangeActiveTextEditor.event,
 
   showTextDocument: jest.fn(async (document: MockTextDocument) => {
     const editor = createTextEditor(document);
     window.activeTextEditor = editor;
     window.visibleTextEditors.push(editor);
+    _emitters.didChangeActiveTextEditor.fire(editor);
     return editor;
   }),
 

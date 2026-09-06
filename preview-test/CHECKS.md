@@ -180,7 +180,10 @@ Not bugs — confirm they behave as described rather than worse:
 - **A bare right-click stays single-line** even on a multi-line block. Deliberate: a one-line
   `contentHash` survives edits elsewhere in the same block, so it reanchors more durably. Only a
   real selection widens the range.
-- **No comment rendering in the preview.** Comments appear in the editor gutter and sidebar only,
-  by design.
 - **Empty space below content resolves to nothing** (check 1.23) — the menu item is absent rather
   than guessing.
+
+Comments *are* now rendered in the preview (markers, click-to-expand, right-click actions) — see
+`CHECKS-comment-actions.md` for that checklist. It was a deliberate later addition; the note above
+about "no rendering" described this file's original (add-only) scope, not a design boundary that
+still holds.

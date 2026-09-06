@@ -14,6 +14,12 @@
 	'use strict';
 
 	const SECTION = 'agentCommentsPreviewTarget';
+	// Right-clicking the floating marker (below) acts on every comment on that block — with a
+	// quickpick to disambiguate if there's more than one.
+	const MARKER_SECTION = 'agentCommentsMarkerTarget';
+	// Right-clicking a specific row in the click-to-expand panel acts on just that one comment —
+	// no quickpick needed, since exactly one id is ever in scope for this section.
+	const ROW_SECTION = 'agentCommentsPanelRowTarget';
 	const MAX_SELECTION_CHARS = 200;
 
 	// The preview embeds its own settings, including `source` — the URI of the .md being rendered.
@@ -138,6 +144,10 @@
 		lastHostPrevious = null;
 	}
 
+	function commentIdsOf(el) {
+		return (el.dataset.agentCommentIds || '').split(',').filter(Boolean);
+	}
+
 	document.addEventListener(
 		'contextmenu',
 		function (e) {
@@ -145,6 +155,43 @@
 			if (!source) {
 				return;
 			}
+
+			// A right-click on a specific comment row inside the expand panel (our own UI, not
+			// rendered markdown content) acts on that one comment directly — no disambiguation, since
+			// exactly one id is ever in scope here.
+			const row = e.target.closest('.agent-comment-panel-entry');
+			if (row) {
+				lastHost = row;
+				lastHostPrevious = Object.prototype.hasOwnProperty.call(row.dataset, 'vscodeContext') ? row.dataset.vscodeContext : null;
+				row.dataset.vscodeContext = JSON.stringify({
+					webviewSection: ROW_SECTION,
+					preventDefaultContextMenuItems: false,
+					agentCommentsSource: source,
+					agentCommentsCommentIds: row.dataset.commentId || '',
+					agentCommentsHasUnresolved: row.dataset.commentStatus === 'unresolved' ? 'true' : 'false',
+					agentCommentsHasResolved: row.dataset.commentStatus === 'resolved' ? 'true' : 'false',
+				});
+				return;
+			}
+
+			// A right-click on the floating marker (our own UI, appended to <body> — see "Comment
+			// markers" below) acts on every comment for that block; the controller disambiguates with
+			// a quickpick if there's more than one applicable.
+			const marker = e.target.closest('.agent-comment-marker');
+			if (marker) {
+				lastHost = marker;
+				lastHostPrevious = Object.prototype.hasOwnProperty.call(marker.dataset, 'vscodeContext') ? marker.dataset.vscodeContext : null;
+				marker.dataset.vscodeContext = JSON.stringify({
+					webviewSection: MARKER_SECTION,
+					preventDefaultContextMenuItems: false,
+					agentCommentsSource: source,
+					agentCommentsCommentIds: marker.dataset.agentCommentIds || '',
+					agentCommentsHasUnresolved: marker.dataset.agentCommentHasUnresolved || 'false',
+					agentCommentsHasResolved: marker.dataset.agentCommentHasResolved || 'false',
+				});
+				return;
+			}
+
 			const host = findCodeLine(e.target);
 			if (!host) {
 				return;
@@ -180,4 +227,217 @@
 		},
 		true
 	);
+
+	// Comment markers: a small floating badge for every block that has a comment
+	// (`commentsMarkdownItPlugin.ts` marks the block itself with `class="agent-comment-line"` plus
+	// `data-agent-comment-*` attributes — that's a query hook only now, carrying no visual styling
+	// of its own). The badge is a real element appended to <body> and positioned with
+	// getBoundingClientRect(), the same technique the expand panel already used below — deliberately
+	// NOT a CSS ::before/absolute-positioned pseudo-element on the block itself: that still visibly
+	// distorted table layout in practice (table row/cell positioning has known cross-engine quirks
+	// that plain reasoning about the CSS spec didn't predict), so the badge lives entirely outside
+	// the table's — or any block's — own DOM subtree, where it categorically cannot affect it.
+	let markerRecords = []; // { marker, host, ids }[]
+
+	function clearMarkers() {
+		for (const { marker } of markerRecords) {
+			marker.remove();
+		}
+		markerRecords = [];
+	}
+
+	function createMarker(host) {
+		let entries;
+		try {
+			entries = JSON.parse(host.dataset.agentCommentsJson || '[]');
+		} catch (err) {
+			entries = [];
+		}
+		const authors = [...new Set(entries.map((c) => c.author))].sort();
+		const marker = document.createElement('span');
+		marker.className = 'agent-comment-marker agent-comment-authors-' + (authors.join('-') || 'user');
+		marker.textContent = entries.length > 1 ? String(entries.length) : '';
+		const titleAttr = host.getAttribute('title');
+		if (titleAttr) {
+			marker.title = titleAttr;
+		}
+		marker.dataset.agentCommentIds = host.dataset.agentCommentIds || '';
+		marker.dataset.agentCommentHasUnresolved = host.dataset.agentCommentHasUnresolved || 'false';
+		marker.dataset.agentCommentHasResolved = host.dataset.agentCommentHasResolved || 'false';
+		positionMarker(marker, host);
+		document.body.appendChild(marker);
+		return marker;
+	}
+
+	// Absolute relative to the document (scrollY/scrollX added in), not fixed to the viewport — it
+	// scrolls naturally with the content this way, no scroll-repositioning listener needed.
+	function positionMarker(marker, host) {
+		const rect = host.getBoundingClientRect();
+		marker.style.position = 'absolute';
+		marker.style.top = rect.top + window.scrollY - 7 + 'px';
+		marker.style.left = rect.left + window.scrollX - 7 + 'px';
+	}
+
+	function syncMarkers() {
+		clearMarkers();
+		for (const host of document.querySelectorAll('.agent-comment-line[data-agent-comment-ids]')) {
+			markerRecords.push({ marker: createMarker(host), host, ids: commentIdsOf(host) });
+		}
+		if (openHost) {
+			const record = markerRecords.find((r) => r.host === openHost);
+			if (record) {
+				record.marker.classList.add('agent-comment-marker-expanded');
+			}
+		}
+	}
+
+	// Click-to-expand: shows comment text directly in the preview, in place, without navigating to
+	// the source file. Independent of the real gutter's collapsed/expanded state — this extension
+	// doesn't persist that anywhere, and there's no live CommentThread widget to embed in a webview
+	// anyway — so this is its own lightweight panel with its own local expand/collapse state.
+	//
+	// Appended to <body> and positioned over the marker, rather than inserted as a child/sibling of
+	// the marked content itself: a marked block can be a <p>, <li>, <td>, or heading, none of which
+	// can validly contain (or sit next to, inside their own parent) an arbitrary block-level child —
+	// the browser would silently renormalize the DOM in ways that are hard to predict. Only one
+	// panel is open at a time.
+	//
+	// Acting on a comment (edit/resolve/reopen/delete) triggers a full markdown.preview.refresh —
+	// every comment changes the store, and any comment's own marker might need to move or vanish, so
+	// this extension always re-renders the whole document rather than trying to patch just one line.
+	// That replaces every rendered element wholesale, including whichever one the open panel was
+	// anchored to — without reconnecting, resolving *one* comment in a multi-comment panel silently
+	// closed the whole panel, hiding every other comment in it too, not just the one that changed.
+	// `openCommentIds` (not just the host element) is what actually identifies "what's open", so a
+	// freshly re-rendered element carrying any of the same ids can be found and the panel reopened
+	// there automatically, showing whatever's left, instead of just disappearing.
+	let openPanel = null;
+	let openHost = null;
+	let openCommentIds = null;
+
+	function closePanel() {
+		if (openPanel) {
+			openPanel.remove();
+		}
+		const record = markerRecords.find((r) => r.host === openHost);
+		if (record) {
+			record.marker.classList.remove('agent-comment-marker-expanded');
+		}
+		openPanel = null;
+		openHost = null;
+		openCommentIds = null;
+	}
+
+	function buildPanel(entries) {
+		const panel = document.createElement('div');
+		panel.className = 'agent-comment-panel';
+		for (const c of entries) {
+			const row = document.createElement('div');
+			row.className = 'agent-comment-panel-entry agent-comment-authors-' + c.author;
+			row.title = 'Right-click for Edit / Resolve / Reopen / Delete';
+			row.dataset.commentId = c.id;
+			row.dataset.commentStatus = c.status;
+			const dot = document.createElement('span');
+			dot.className = 'agent-comment-dot';
+			const who = document.createElement('span');
+			who.className = 'agent-comment-panel-author';
+			who.textContent = c.author === 'user' ? 'You' : 'Agent';
+			if (c.status === 'resolved') {
+				who.textContent += ' · resolved by ' + (c.resolvedBy === 'user' ? 'you' : 'agent');
+			}
+			const text = document.createElement('span');
+			text.className = 'agent-comment-panel-text';
+			text.textContent = c.text;
+			row.append(dot, who, text);
+			panel.appendChild(row);
+		}
+		return panel;
+	}
+
+	function openPanelFor(host) {
+		if (openPanel) {
+			openPanel.remove();
+		}
+		if (openHost && openHost !== host) {
+			const previous = markerRecords.find((r) => r.host === openHost);
+			if (previous) {
+				previous.marker.classList.remove('agent-comment-marker-expanded');
+			}
+		}
+		let entries;
+		try {
+			entries = JSON.parse(host.dataset.agentCommentsJson || '[]');
+		} catch (err) {
+			entries = [];
+		}
+		const panel = buildPanel(entries);
+		const rect = host.getBoundingClientRect();
+		panel.style.position = 'fixed';
+		panel.style.left = Math.max(4, rect.left) + 'px';
+		panel.style.top = rect.bottom + 'px';
+		panel.style.width = Math.max(240, Math.min(rect.width, 480)) + 'px';
+		document.body.appendChild(panel);
+		const record = markerRecords.find((r) => r.host === host);
+		if (record) {
+			record.marker.classList.add('agent-comment-marker-expanded');
+		}
+		openPanel = panel;
+		openHost = host;
+		openCommentIds = commentIdsOf(host);
+	}
+
+	document.addEventListener('click', function (e) {
+		const marker = e.target.closest('.agent-comment-marker');
+		if (marker) {
+			const record = markerRecords.find((r) => r.marker === marker);
+			if (!record) {
+				return;
+			}
+			if (openHost === record.host) {
+				closePanel();
+			} else {
+				openPanelFor(record.host);
+			}
+			return;
+		}
+		if (e.target.closest('.agent-comment-panel')) {
+			return; // interacting with the panel itself shouldn't dismiss it
+		}
+		closePanel();
+	});
+
+	// The one signal previewScripts gives no other way to observe is "the content just got replaced
+	// by a refresh" — detected here via mutation rather than instrumenting every call site that can
+	// trigger one. Disconnect while re-syncing since syncMarkers()/openPanelFor() mutate <body>
+	// themselves (appending markers/the panel), which would otherwise re-trigger this observer.
+	let resyncScheduled = false;
+	function scheduleResync() {
+		if (resyncScheduled) {
+			return;
+		}
+		resyncScheduled = true;
+		requestAnimationFrame(function () {
+			resyncScheduled = false;
+			observer.disconnect();
+			syncMarkers();
+			if (openHost && !openHost.isConnected) {
+				const stillPresentIds = openCommentIds;
+				const candidate = markerRecords.find((r) => r.ids.some((id) => stillPresentIds.includes(id)));
+				if (candidate) {
+					openPanelFor(candidate.host);
+				} else {
+					closePanel(); // every comment that was open got resolved-and-hidden or deleted
+				}
+			}
+			observer.observe(document.body, { childList: true, subtree: true });
+		});
+	}
+
+	const observer = new MutationObserver(scheduleResync);
+	observer.observe(document.body, { childList: true, subtree: true });
+	window.addEventListener('resize', scheduleResync);
+	// The panel is position: fixed (viewport-relative), unlike the markers (document-relative, so
+	// they scroll naturally) — close it on scroll rather than let it drift away from its line.
+	window.addEventListener('scroll', closePanel, true);
+	syncMarkers();
 })();

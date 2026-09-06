@@ -3,7 +3,7 @@
 src/**
 out/**
 node_modules/**
-*.map
+**/*.map
 .gitignore
 esbuild.js
 tsconfig.json

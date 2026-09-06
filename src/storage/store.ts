@@ -119,6 +119,18 @@ export class CommentStore {
     return new Map(this.index);
   }
 
+  /** Synchronous, I/O-free read of whatever's already in the live/archive caches for a file — for
+   * callers (the markdown preview's `extendMarkdownIt` plugin) that run inside markdown-it's
+   * synchronous render pipeline and can't `await loadFile`/`getArchivedComments`. `undefined` per
+   * side means "not cached yet", not "no comments" — the caller is expected to kick off the async
+   * load itself and re-render once it resolves. */
+  peekCachedComments(filePath: string): { live: StoredComment[] | undefined; archived: StoredComment[] | undefined } {
+    return {
+      live: this.cache.get(filePath)?.comments,
+      archived: this.archiveCache.get(filePath),
+    };
+  }
+
   private queueWrite<T>(filePath: string, op: () => Promise<T>): Promise<T> {
     const prior = this.writeQueues.get(filePath) ?? Promise.resolve();
     const next = prior.then(op, op);

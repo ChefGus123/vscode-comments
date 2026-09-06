@@ -120,7 +120,9 @@ export class AgentCommentsTreeProvider implements vscode.TreeDataProvider<Node> 
   }
 }
 
-function truncate(text: string): string {
+/** Single-line, 80-char truncation used for any short label built from a comment's free-text body
+ * — the tree's own item labels, and the markdown-preview quickpick's disambiguation list. */
+export function truncate(text: string): string {
   const singleLine = text.replace(/\s+/g, ' ').trim();
   return singleLine.length > 80 ? `${singleLine.slice(0, 77)}...` : singleLine;
 }

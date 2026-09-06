@@ -1106,6 +1106,223 @@ describe('addCommentFromPreview', () => {
   });
 });
 
+describe('editCommentFromPreview / resolveCommentFromPreview / reopenCommentFromPreview / deleteCommentFromPreview', () => {
+  const inputBox = () => vscode.window.showInputBox as unknown as jest.Mock;
+  const quickPick = () => vscode.window.showQuickPick as unknown as jest.Mock;
+  const anchor = { lineHint: 1, endLineHint: 1, contentHash: 'h', contextBefore: '', contextAfter: '', status: 'exact' as const };
+
+  async function previewDoc(relativePath = 'doc.md', content = 'one\ntwo\nthree'): Promise<string> {
+    const uri = await writeSourceFile(relativePath, content);
+    return uri.toString();
+  }
+
+  describe('payload validation', () => {
+    it('warns when there is no source', async () => {
+      const { controller } = await setup();
+      await controller.resolveCommentFromPreview({ agentCommentsCommentIds: 'c1' });
+      expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('could not tell which file'));
+    });
+
+    it('warns when there are no comment ids', async () => {
+      const { controller } = await setup();
+      const source = await previewDoc();
+      await controller.deleteCommentFromPreview({ agentCommentsSource: source, agentCommentsCommentIds: '' });
+      expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('could not tell which comment'));
+    });
+
+    it('warns when agentCommentsCommentIds is entirely absent from the payload', async () => {
+      const { controller } = await setup();
+      const source = await previewDoc();
+      await controller.deleteCommentFromPreview({ agentCommentsSource: source });
+      expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('could not tell which comment'));
+    });
+
+    it('warns for a non-file-scheme source, same message addCommentFromPreview uses', async () => {
+      const { controller } = await setup();
+      await controller.editCommentFromPreview({ agentCommentsSource: 'untitled://x/Untitled-1', agentCommentsCommentIds: 'c1' });
+      expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('unsaved or virtual'));
+    });
+  });
+
+  describe('resolveCommentFromPreview', () => {
+    it('resolves the single candidate directly without prompting', async () => {
+      const { controller, store } = await setup();
+      const source = await previewDoc();
+      const added = await store.addComment('doc.md', anchor, 'hi', { type: 'user' });
+
+      await controller.resolveCommentFromPreview({ agentCommentsSource: source, agentCommentsCommentIds: added.id });
+
+      expect(quickPick()).not.toHaveBeenCalled();
+      expect((await store.loadFile('doc.md')).comments).toHaveLength(0);
+      const archived = await store.getArchivedComments('doc.md');
+      expect(archived[0].status).toBe('resolved');
+      expect(archived[0].resolvedBy).toEqual({ type: 'user' });
+    });
+
+    it('prompts with a quickpick when more than one candidate applies, and resolves only the picked one', async () => {
+      const { controller, store } = await setup();
+      const source = await previewDoc();
+      const a = await store.addComment('doc.md', anchor, 'first', { type: 'user' });
+      const b = await store.addComment('doc.md', anchor, 'second', { type: 'agent' });
+      quickPick().mockImplementationOnce(async (items: { comment: { id: string } }[]) => items.find((i) => i.comment.id === b.id));
+
+      await controller.resolveCommentFromPreview({ agentCommentsSource: source, agentCommentsCommentIds: `${a.id},${b.id}` });
+
+      expect(quickPick()).toHaveBeenCalled();
+      const items = quickPick().mock.calls[0][0] as { label: string; description: string }[];
+      expect(items.map((i) => i.label)).toEqual(['first', 'second']);
+      expect(items.map((i) => i.description)).toEqual(['You · unresolved', 'Agent · unresolved']);
+
+      const live = (await store.loadFile('doc.md')).comments;
+      expect(live.map((c) => c.id)).toEqual([a.id]);
+      expect((await store.getArchivedComments('doc.md')).map((c) => c.id)).toEqual([b.id]);
+    });
+
+    it('does nothing and informs the user when every candidate is already resolved', async () => {
+      const { controller, store } = await setup();
+      const source = await previewDoc();
+      const added = await store.addComment('doc.md', anchor, 'hi', { type: 'user' });
+      await store.resolveComment('doc.md', added.id, { type: 'user' });
+
+      await controller.resolveCommentFromPreview({ agentCommentsSource: source, agentCommentsCommentIds: added.id });
+
+      expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(expect.stringContaining('nothing to resolve'));
+      expect(quickPick()).not.toHaveBeenCalled();
+    });
+
+    it('falls back to "unknown" resolver in the quickpick description when resolvedBy is missing on a resolved candidate', async () => {
+      const { controller, store } = await setup();
+      const source = await previewDoc();
+      const a = await store.addComment('doc.md', anchor, 'first', { type: 'user' });
+      // Simulates a resolved comment with no resolvedBy, same defensive case treeView.ts's own
+      // fallback covers — not reachable through the store's own resolveComment, which always sets it.
+      jest.spyOn(store, 'getArchivedComments').mockResolvedValueOnce([
+        { id: 'c_archived', anchor, author: { type: 'user' }, text: 'stale', status: 'resolved', resolvedBy: null, createdAt: '', updatedAt: '' },
+      ]);
+      quickPick().mockImplementationOnce(async (items: { comment: { id: string } }[]) => items.find((i) => i.comment.id === a.id));
+
+      await controller.deleteCommentFromPreview({ agentCommentsSource: source, agentCommentsCommentIds: `${a.id},c_archived` });
+
+      const items = quickPick().mock.calls[0][0] as { description: string }[];
+      expect(items.map((i) => i.description)).toContain('You · resolved by unknown');
+    });
+
+    it('changes nothing when the quickpick is dismissed', async () => {
+      const { controller, store } = await setup();
+      const source = await previewDoc();
+      const a = await store.addComment('doc.md', anchor, 'first', { type: 'user' });
+      const b = await store.addComment('doc.md', anchor, 'second', { type: 'user' });
+
+      await controller.resolveCommentFromPreview({ agentCommentsSource: source, agentCommentsCommentIds: `${a.id},${b.id}` });
+
+      expect((await store.loadFile('doc.md')).comments).toHaveLength(2);
+    });
+  });
+
+  describe('reopenCommentFromPreview', () => {
+    it('does nothing and informs the user when every candidate is still unresolved', async () => {
+      const { controller, store } = await setup();
+      const source = await previewDoc();
+      const added = await store.addComment('doc.md', anchor, 'hi', { type: 'user' });
+
+      await controller.reopenCommentFromPreview({ agentCommentsSource: source, agentCommentsCommentIds: added.id });
+
+      expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(expect.stringContaining('nothing to reopen'));
+      expect(quickPick()).not.toHaveBeenCalled();
+    });
+
+    it('reopens the single resolved candidate, ignoring an unresolved id in the same list', async () => {
+      const { controller, store } = await setup();
+      const source = await previewDoc();
+      const resolved = await store.addComment('doc.md', anchor, 'r', { type: 'user' });
+      await store.resolveComment('doc.md', resolved.id, { type: 'user' });
+      const unresolved = await store.addComment('doc.md', anchor, 'u', { type: 'user' });
+
+      await controller.reopenCommentFromPreview({ agentCommentsSource: source, agentCommentsCommentIds: `${resolved.id},${unresolved.id}` });
+
+      expect(quickPick()).not.toHaveBeenCalled();
+      const live = (await store.loadFile('doc.md')).comments;
+      expect(live.find((c) => c.id === resolved.id)?.status).toBe('unresolved');
+      expect(await store.getArchivedComments('doc.md')).toHaveLength(0);
+    });
+  });
+
+  describe('deleteCommentFromPreview', () => {
+    it('deletes the single candidate regardless of status', async () => {
+      const { controller, store } = await setup();
+      const source = await previewDoc();
+      const added = await store.addComment('doc.md', anchor, 'hi', { type: 'user' });
+
+      await controller.deleteCommentFromPreview({ agentCommentsSource: source, agentCommentsCommentIds: added.id });
+
+      expect((await store.loadFile('doc.md')).comments).toHaveLength(0);
+      expect(await store.getArchivedComments('doc.md')).toHaveLength(0);
+    });
+
+    it('prompts with a quickpick across mixed resolved/unresolved candidates', async () => {
+      const { controller, store } = await setup();
+      const source = await previewDoc();
+      const a = await store.addComment('doc.md', anchor, 'first', { type: 'user' });
+      const b = await store.addComment('doc.md', anchor, 'second', { type: 'user' });
+      await store.resolveComment('doc.md', b.id, { type: 'user' });
+      quickPick().mockImplementationOnce(async (items: { comment: { id: string } }[]) => items.find((i) => i.comment.id === a.id));
+
+      await controller.deleteCommentFromPreview({ agentCommentsSource: source, agentCommentsCommentIds: `${a.id},${b.id}` });
+
+      expect((await store.loadFile('doc.md')).comments).toHaveLength(0);
+      expect(await store.getArchivedComments('doc.md')).toHaveLength(1);
+    });
+  });
+
+  describe('editCommentFromPreview', () => {
+    it('shows an input box prefilled with the current text and saves the edit', async () => {
+      const { controller, store } = await setup();
+      const source = await previewDoc();
+      const added = await store.addComment('doc.md', anchor, 'original', { type: 'user' });
+      inputBox().mockResolvedValueOnce('edited text');
+
+      await controller.editCommentFromPreview({ agentCommentsSource: source, agentCommentsCommentIds: added.id });
+
+      expect(inputBox().mock.calls[0][0]).toMatchObject({ value: 'original' });
+      expect((await store.loadFile('doc.md')).comments[0].text).toBe('edited text');
+    });
+
+    it('does nothing and informs the user when every candidate is already resolved', async () => {
+      const { controller, store } = await setup();
+      const source = await previewDoc();
+      const added = await store.addComment('doc.md', anchor, 'hi', { type: 'user' });
+      await store.resolveComment('doc.md', added.id, { type: 'user' });
+
+      await controller.editCommentFromPreview({ agentCommentsSource: source, agentCommentsCommentIds: added.id });
+
+      expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(expect.stringContaining('nothing to edit'));
+      expect(inputBox()).not.toHaveBeenCalled();
+    });
+
+    it('makes no change on a blank/cancelled input box', async () => {
+      const { controller, store } = await setup();
+      const source = await previewDoc();
+      const added = await store.addComment('doc.md', anchor, 'original', { type: 'user' });
+
+      await controller.editCommentFromPreview({ agentCommentsSource: source, agentCommentsCommentIds: added.id });
+
+      expect((await store.loadFile('doc.md')).comments[0].text).toBe('original');
+    });
+
+    it('warns when the save lands on a comment resolved/deleted elsewhere in the same race', async () => {
+      const { controller, store } = await setup();
+      const source = await previewDoc();
+      const added = await store.addComment('doc.md', anchor, 'original', { type: 'user' });
+      inputBox().mockResolvedValueOnce('too late');
+      jest.spyOn(store, 'updateCommentText').mockResolvedValueOnce(undefined);
+
+      await controller.editCommentFromPreview({ agentCommentsSource: source, agentCommentsCommentIds: added.id });
+
+      expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('resolved or deleted elsewhere'));
+    });
+  });
+});
+
 describe('resolveThread / reopenThread / deleteThread', () => {
   it('warns for resolveThread/reopenThread/deleteThread when there is no thread or comment id', async () => {
     const { controller } = await setup();

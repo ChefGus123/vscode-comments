@@ -134,6 +134,26 @@ describe('registered commands delegate to the right collaborator', () => {
     await Promise.all(context.subscriptions.map((d) => d.dispose()));
   });
 
+  it('editCommentFromPreview / resolveCommentFromPreview / reopenCommentFromPreview / deleteCommentFromPreview forward the webview context object to the controller', async () => {
+    const context = await activateNormally();
+    const editSpy = jest.spyOn(AgentCommentsController.prototype, 'editCommentFromPreview').mockResolvedValue(undefined);
+    const resolveSpy = jest.spyOn(AgentCommentsController.prototype, 'resolveCommentFromPreview').mockResolvedValue(undefined);
+    const reopenSpy = jest.spyOn(AgentCommentsController.prototype, 'reopenCommentFromPreview').mockResolvedValue(undefined);
+    const deleteSpy = jest.spyOn(AgentCommentsController.prototype, 'deleteCommentFromPreview').mockResolvedValue(undefined);
+    const ctx = { agentCommentsSource: 'file:///repo/a.md', agentCommentsCommentIds: 'c1' };
+
+    await commandHandler('agentComments.editCommentFromPreview')(ctx);
+    await commandHandler('agentComments.resolveCommentFromPreview')(ctx);
+    await commandHandler('agentComments.reopenCommentFromPreview')(ctx);
+    await commandHandler('agentComments.deleteCommentFromPreview')(ctx);
+
+    expect(editSpy).toHaveBeenCalledWith(ctx);
+    expect(resolveSpy).toHaveBeenCalledWith(ctx);
+    expect(reopenSpy).toHaveBeenCalledWith(ctx);
+    expect(deleteSpy).toHaveBeenCalledWith(ctx);
+    await Promise.all(context.subscriptions.map((d) => d.dispose()));
+  });
+
   it('editComment / saveComment / cancelEditComment delegate to the controller', async () => {
     const context = await activateNormally();
     commandHandler('agentComments.editComment')(undefined);
@@ -194,6 +214,160 @@ describe('registered commands delegate to the right collaborator', () => {
     expect(clearAllSpy).toHaveBeenCalledTimes(1);
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(expect.stringContaining('cleared'));
     await Promise.all(context.subscriptions.map((d) => d.dispose()));
+  });
+});
+
+describe('markdown preview integration', () => {
+  it('picks up an already-active Markdown editor at activation time, not just later changes', async () => {
+    vscode.workspace.workspaceFolders = [{ uri: repoUri, name: 'repo', index: 0 }];
+    const uri = vscode.Uri.joinPath(repoUri, 'a.md');
+    await vscode.workspace.fs.writeFile(uri, Buffer.from('one', 'utf8'));
+    // Becomes the active editor before activate() ever runs, so onDidChangeActiveTextEditor (which
+    // only fires on a *later* change) can't be what picks it up — the initial value must be read
+    // directly from vscode.window.activeTextEditor at construction time.
+    await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri));
+
+    const context = makeContext(vscode.Uri.file('/storage'));
+    const seedStore = new CommentStore(vscode.Uri.file('/storage'));
+    await seedStore.initialize();
+    await seedStore.addComment(
+      'a.md',
+      { lineHint: 1, endLineHint: 1, contentHash: 'h', contextBefore: '', contextAfter: '', status: 'exact' },
+      'hi',
+      { type: 'user' }
+    );
+    const result = await activate(context);
+    for (let i = 0; i < 20; i++) {
+      await Promise.resolve();
+    }
+
+    let rule: ((state: { env: Record<string, unknown>; tokens: unknown[] }) => void) | undefined;
+    const md = { core: { ruler: { push: (_name: string, fn: typeof rule) => { rule = fn; } } } };
+    result!.extendMarkdownIt!(md as never);
+
+    const token = {
+      map: [0, 1] as [number, number],
+      attrs: {} as Record<string, string>,
+      attrJoin(name: string, value: string) {
+        this.attrs[name] = this.attrs[name] ? `${this.attrs[name]} ${value}` : value;
+      },
+      attrSet(name: string, value: string) {
+        this.attrs[name] = value;
+      },
+    };
+    rule!({ env: {}, tokens: [token] });
+
+    expect(token.attrs.class).toContain('agent-comment-line');
+    await Promise.all(context.subscriptions.map((d) => d.dispose()));
+  });
+
+  it('tracks the last-focused Markdown editor and uses it as a fallback when env.currentDocument is undefined', async () => {
+    vscode.workspace.workspaceFolders = [{ uri: repoUri, name: 'repo', index: 0 }];
+    const context = makeContext(vscode.Uri.file('/storage'));
+    const uri = vscode.Uri.joinPath(repoUri, 'a.md');
+    await vscode.workspace.fs.writeFile(uri, Buffer.from('one', 'utf8'));
+
+    // Seed the comment on disk *before* activate()'s own controller ever opens/renders this file —
+    // renderDocument() caches whatever loadFile() finds at that moment, and nothing invalidates a
+    // different CommentStore instance's cache later, so adding the comment after would cache an
+    // empty result forever.
+    const seedStore = new CommentStore(vscode.Uri.file('/storage'));
+    await seedStore.initialize();
+    await seedStore.addComment(
+      'a.md',
+      { lineHint: 1, endLineHint: 1, contentHash: 'h', contextBefore: '', contextAfter: '', status: 'exact' },
+      'hi',
+      { type: 'user' }
+    );
+
+    const result = await activate(context);
+
+    // Simulates opening the .md file in an editor — real VS Code fires onDidChangeActiveTextEditor
+    // for this, which is how extension.ts learns which file to fall back to.
+    await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri));
+    // onDidOpenTextDocument's listener (AgentCommentsController.renderDocument) is async and
+    // fire-and-forget from the emitter's perspective — awaiting openTextDocument itself doesn't
+    // wait for that handler's own loadFile() to settle, so give its microtasks a chance to finish.
+    for (let i = 0; i < 20; i++) {
+      await Promise.resolve();
+    }
+
+    let rule: ((state: { env: Record<string, unknown>; tokens: unknown[] }) => void) | undefined;
+    const md = { core: { ruler: { push: (_name: string, fn: typeof rule) => { rule = fn; } } } };
+    result!.extendMarkdownIt!(md as never);
+
+    // No currentDocument in env at all — the plugin must fall back to the tracked active editor.
+    // Opening the document above already warmed activate()'s own store's cache for 'a.md' (via
+    // AgentCommentsController.renderDocument), so this should match on the very first pass.
+    const makeToken = () => ({
+      map: [0, 1] as [number, number],
+      attrs: {} as Record<string, string>,
+      attrJoin(name: string, value: string) {
+        this.attrs[name] = this.attrs[name] ? `${this.attrs[name]} ${value}` : value;
+      },
+      attrSet(name: string, value: string) {
+        this.attrs[name] = value;
+      },
+    });
+    const token = makeToken();
+    rule!({ env: {}, tokens: [token] });
+
+    expect(token.attrs.class).toContain('agent-comment-line');
+    await Promise.all(context.subscriptions.map((d) => d.dispose()));
+  });
+
+  it('returns extendMarkdownIt, which registers a core rule that warms a cold cache and calls markdown.preview.refresh once it resolves', async () => {
+    vscode.workspace.workspaceFolders = [{ uri: repoUri, name: 'repo', index: 0 }];
+    const context = makeContext(vscode.Uri.file('/storage'));
+    await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(repoUri, 'a.md'), Buffer.from('one', 'utf8'));
+    const result = await activate(context);
+    expect(result?.extendMarkdownIt).toBeInstanceOf(Function);
+
+    let rule: ((state: { env: Record<string, unknown>; tokens: unknown[] }) => void) | undefined;
+    const md = { core: { ruler: { push: (_name: string, fn: typeof rule) => { rule = fn; } } } };
+    result!.extendMarkdownIt!(md as never);
+    expect(rule).toBeInstanceOf(Function);
+
+    const executeCommandSpy = vscode.commands.executeCommand as jest.Mock;
+    executeCommandSpy.mockClear();
+    rule!({ env: { currentDocument: vscode.Uri.joinPath(repoUri, 'a.md') }, tokens: [] });
+
+    for (let i = 0; i < 20; i++) {
+      await Promise.resolve();
+    }
+    expect(executeCommandSpy).toHaveBeenCalledWith('markdown.preview.refresh');
+    await Promise.all(context.subscriptions.map((d) => d.dispose()));
+  });
+
+  it('debounces markdown.preview.refresh across rapid store changes into one call, and cancels a pending one on dispose', async () => {
+    jest.useFakeTimers();
+    const context = await activateNormally();
+    const uri = vscode.Uri.joinPath(repoUri, 'a.md');
+    await vscode.workspace.fs.writeFile(uri, Buffer.from('one\ntwo', 'utf8'));
+    const executeCommandSpy = vscode.commands.executeCommand as jest.Mock;
+    executeCommandSpy.mockClear();
+
+    const source = uri.toString();
+    (vscode.window.showInputBox as jest.Mock).mockResolvedValue('first');
+    await commandHandler('agentComments.addCommentFromPreview')({ agentCommentsSource: source, agentCommentsLine: 0 });
+    // A second store change while the first's debounce timer is still pending must reset it
+    // (the `clearTimeout` branch), not queue a second refresh.
+    (vscode.window.showInputBox as jest.Mock).mockResolvedValue('second');
+    await commandHandler('agentComments.addCommentFromPreview')({ agentCommentsSource: source, agentCommentsLine: 1 });
+
+    jest.advanceTimersByTime(300);
+    expect(executeCommandSpy).toHaveBeenCalledTimes(1);
+    expect(executeCommandSpy).toHaveBeenCalledWith('markdown.preview.refresh');
+
+    // A pending timer at dispose time must be cancelled, not left to fire after teardown.
+    executeCommandSpy.mockClear();
+    (vscode.window.showInputBox as jest.Mock).mockResolvedValue('third');
+    await commandHandler('agentComments.addCommentFromPreview')({ agentCommentsSource: source, agentCommentsLine: 0 });
+    await Promise.all(context.subscriptions.map((d) => d.dispose()));
+    jest.advanceTimersByTime(300);
+    expect(executeCommandSpy).not.toHaveBeenCalled();
+
+    jest.useRealTimers();
   });
 });
 
