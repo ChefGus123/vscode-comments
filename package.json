@@ -2,7 +2,7 @@
   "name": "agentic-comments",
   "displayName": "Agentic Comments",
   "description": "Leave GitHub-style inline review comments on live code and expose them to AI coding agents via MCP.",
-  "version": "0.4.0",
+  "version": "0.4.5",
   "publisher": "IlayAmir",
   "icon": "media/icon.png",
   "galleryBanner": {

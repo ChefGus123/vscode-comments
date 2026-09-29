@@ -68,6 +68,12 @@ Every response flags comments whose anchor isn't exact (`locationUncertain: true
 
 ## Release Notes
 
+### 0.4.5
+- **Harness-agnostic MCP access** — connect localhost MCP clients outside VS Code using a logged endpoint and an optional fixed port.
+- **Built-in OAuth 2.1** — clients can use discovery, dynamic registration, PKCE, refresh tokens, and revocation without enabling an extension setting.
+- **Explicit authorization** — every OAuth authorization request requires approval in VS Code; the existing per-session token remains available to VS Code.
+- **Concurrent clients** — OAuth and session-token clients use isolated MCP sessions and can operate at the same time.
+
 ### 0.4.0
 - **Comment on rendered Markdown.** Right-click any block in VS Code's built-in Markdown preview → **Add Comment**, and it anchors to the matching line of the source `.md`. Review a doc the way you read it, not as raw syntax.
 - Select across several blocks first and the comment covers the whole span. Because Markdown's source mapping is block-level, a selection always widens to whole blocks — so the input box tells you exactly which lines it captured before you type.
