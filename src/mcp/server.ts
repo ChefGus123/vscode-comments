@@ -4,14 +4,32 @@ import { randomUUID, randomBytes } from 'crypto';
 import * as vscode from 'vscode';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
+import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
+import { getOAuthProtectedResourceMetadataUrl, mcpAuthRouter } from '@modelcontextprotocol/sdk/server/auth/router.js';
+import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
 import { z } from 'zod';
 import { CommentStore } from '../storage/store';
 import { canonicalizeRelativePath, resolveWorkspaceRelativePath, toWorkspaceRelativePath } from '../storage/paths';
 import { createAnchorFromContent } from '../anchoring/anchor';
 import { truncateSnippet } from '../anchoring/snippet';
 import { ToolCommentView } from '../types';
+import { AgentCommentsOAuthProvider, MCP_OAUTH_SCOPE } from './oauth';
 
 export const AUTH_HEADER = 'x-agent-comments-token';
+
+export interface McpOAuthOptions {
+  secrets: vscode.SecretStorage;
+  storageKey: string;
+}
+
+interface McpSession {
+  server: McpServer;
+  transport: StreamableHTTPServerTransport;
+  lastActivity: number;
+}
+
+const SESSION_IDLE_TTL_MS = 30 * 60 * 1000;
 
 /**
  * Lean wire format for tool responses — every field costs tokens on every call. Responses are
@@ -94,12 +112,16 @@ function resolveCanonicalFile(file: string): { canonicalFile: string } | { error
 
 export class AgentCommentsMcpServer implements vscode.Disposable {
   private httpServer: http.Server | undefined;
-  private transport: StreamableHTTPServerTransport | undefined;
-  private mcpServer: McpServer | undefined;
+  private readonly sessions = new Map<string, McpSession>();
+  private readonly activeSessions = new Set<McpSession>();
+  private sessionCleanupTimer: NodeJS.Timeout | undefined;
   private _port: number | undefined;
   private readonly authToken = randomBytes(24).toString('hex');
 
-  constructor(private readonly store: CommentStore) {}
+  constructor(
+    private readonly store: CommentStore,
+    private readonly oauth: McpOAuthOptions
+  ) {}
 
   get port(): number | undefined {
     return this._port;
@@ -111,46 +133,119 @@ export class AgentCommentsMcpServer implements vscode.Disposable {
     return this.authToken;
   }
 
-  async start(): Promise<number> {
-    const server = new McpServer({ name: 'agentic-comments', version: '0.1.0' });
-    this.registerTools(server);
-
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
-    });
-    await server.connect(transport);
-
-    const httpServer = http.createServer((req, res) => {
-      if (!req.url || !req.url.startsWith('/mcp')) {
-        res.statusCode = 404;
-        res.end();
-        return;
-      }
-      if (req.headers[AUTH_HEADER] !== this.authToken) {
-        res.statusCode = 401;
-        res.end();
-        return;
-      }
-      void transport.handleRequest(req, res);
-    });
-
+  async start(port = 0): Promise<number> {
+    let requestHandler: http.RequestListener = (_req, res) => {
+      res.statusCode = 503;
+      res.end();
+    };
+    const httpServer = http.createServer((req, res) => requestHandler(req, res));
     await new Promise<void>((resolve, reject) => {
       httpServer.once('error', reject);
-      httpServer.listen(0, '127.0.0.1', () => resolve());
+      httpServer.listen(port, '127.0.0.1', () => resolve());
     });
 
-    this.mcpServer = server;
-    this.transport = transport;
+    const actualPort = (httpServer.address() as AddressInfo).port;
+    try {
+      const app = createMcpExpressApp({ host: '127.0.0.1' });
+      const origin = new URL(`http://127.0.0.1:${actualPort}`);
+      const resourceUrl = new URL('/mcp', origin);
+      const provider = new AgentCommentsOAuthProvider(this.oauth.secrets, this.oauth.storageKey, resourceUrl);
+      await provider.initialize();
+      app.use(mcpAuthRouter({
+        provider,
+        issuerUrl: origin,
+        resourceServerUrl: resourceUrl,
+        scopesSupported: [MCP_OAUTH_SCOPE],
+        resourceName: 'Agentic Comments',
+      }));
+      const bearerAuth = requireBearerAuth({
+        verifier: provider,
+        requiredScopes: [MCP_OAUTH_SCOPE],
+        resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(resourceUrl),
+      });
+      app.all('/mcp', (req: http.IncomingMessage & { body?: unknown }, res: http.ServerResponse) => {
+        if (req.headers[AUTH_HEADER] === this.authToken) {
+          void this.handleMcpRequest(req, res);
+          return;
+        }
+        bearerAuth(req, res, () => {
+          void this.handleMcpRequest(req, res);
+        });
+      });
+      requestHandler = app;
+    } catch (err) {
+      httpServer.close();
+      throw err;
+    }
+
     this.httpServer = httpServer;
-    this._port = (httpServer.address() as AddressInfo).port;
+    this.sessionCleanupTimer = setInterval(this.pruneIdleSessions, 60 * 1000);
+    this.sessionCleanupTimer.unref();
+    this._port = actualPort;
     return this._port;
   }
 
   dispose(): void {
     this.httpServer?.close();
-    void this.transport?.close();
-    void this.mcpServer?.close();
+    if (this.sessionCleanupTimer) {
+      clearInterval(this.sessionCleanupTimer);
+    }
+    for (const session of this.activeSessions) {
+      void session.server.close();
+    }
+    this.sessions.clear();
+    this.activeSessions.clear();
   }
+
+  private async handleMcpRequest(
+    req: http.IncomingMessage & { body?: unknown },
+    res: http.ServerResponse
+  ): Promise<void> {
+    const sessionId = req.headers['mcp-session-id'];
+    let session = typeof sessionId === 'string' ? this.sessions.get(sessionId) : undefined;
+    if (session) {
+      session.lastActivity = Date.now();
+    }
+    if (!session && sessionId === undefined && isInitializeRequest(req.body)) {
+      const server = new McpServer({ name: 'agentic-comments', version: '0.1.0' });
+      this.registerTools(server);
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: (id) => {
+          this.sessions.set(id, session!);
+        },
+      });
+      session = { server, transport, lastActivity: Date.now() };
+      this.activeSessions.add(session);
+      transport.onclose = () => {
+        this.sessions.delete(String(transport.sessionId));
+        this.activeSessions.delete(session!);
+      };
+      await server.connect(transport);
+    }
+    if (!session) {
+      res.statusCode = sessionId === undefined ? 400 : 404;
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({
+        jsonrpc: '2.0',
+        error: { code: -32000, message: 'Bad Request: No valid session ID provided' },
+        id: null,
+      }));
+      return;
+    }
+    await session.transport.handleRequest(req, res, req.body);
+  }
+
+  private readonly pruneIdleSessions = (): void => {
+    const cutoff = Date.now() - SESSION_IDLE_TTL_MS;
+    for (const [id, session] of this.sessions) {
+      if (session.lastActivity <= cutoff) {
+        this.sessions.delete(id);
+        this.activeSessions.delete(session);
+        void session.server.close();
+      }
+    }
+  };
 
   private registerTools(server: McpServer): void {
     server.registerTool(

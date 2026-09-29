@@ -1,4 +1,5 @@
 import * as http from 'http';
+import { createHash, randomBytes } from 'crypto';
 import * as vscode from 'vscode';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -21,7 +22,7 @@ async function setupServer() {
   vscode.workspace.workspaceFolders = [{ uri: repoUri, name: 'repo', index: 0 }];
   const store = new CommentStore(storageUri);
   await store.initialize();
-  const server = new AgentCommentsMcpServer(store);
+  const server = new AgentCommentsMcpServer(store, { secrets: memorySecrets(), storageKey: 'oauth' });
   const port = await server.start();
   return { store, server, port };
 }
@@ -50,6 +51,60 @@ function rawRequest(port: number, path: string, headers: Record<string, string> 
     });
     req.on('error', reject);
     req.end();
+  });
+}
+
+function request(
+  port: number,
+  path: string,
+  options: { method?: string; headers?: Record<string, string>; body?: string } = {}
+): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      host: '127.0.0.1',
+      port,
+      path,
+      method: options.method ?? 'GET',
+      headers: options.headers,
+    }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+      res.on('end', () => resolve({
+        status: res.statusCode ?? 0,
+        headers: res.headers,
+        body: Buffer.concat(chunks).toString('utf8'),
+      }));
+    });
+    req.on('error', reject);
+    if (options.body) {
+      req.write(options.body);
+    }
+    req.end();
+  });
+}
+
+function memorySecrets(): vscode.SecretStorage {
+  const values = new Map<string, string>();
+  return {
+    get: jest.fn(async (key) => values.get(key)),
+    store: async (key, value) => { values.set(key, value); },
+    delete: async (key) => { values.delete(key); },
+    onDidChange: () => ({ dispose() {} }),
+  };
+}
+
+function availablePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const probe = http.createServer();
+    probe.once('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const address = probe.address();
+      if (!address || typeof address === 'string') {
+        reject(new Error('probe did not bind'));
+        return;
+      }
+      probe.close((err) => err ? reject(err) : resolve(address.port));
+    });
   });
 }
 
@@ -85,12 +140,156 @@ describe('server lifecycle and raw HTTP auth', () => {
     expect(missing.status).toBe(401);
     const wrong = await rawRequest(port, '/mcp', { [AUTH_HEADER]: 'nope' });
     expect(wrong.status).toBe(401);
+    const bearer = await rawRequest(port, '/mcp', { authorization: `Bearer ${server.token}` });
+    expect(bearer.status).toBe(401);
+  });
+
+  it('returns 404 for an unknown MCP session and prunes idle sessions', async () => {
+    const { server, port } = await setupServer();
+    activeServer = server;
+    const unknown = await rawRequest(port, '/mcp', {
+      [AUTH_HEADER]: server.token,
+      'mcp-session-id': 'unknown',
+    });
+    expect(unknown.status).toBe(404);
+
+    const stale = { server: { close: jest.fn() }, transport: {}, lastActivity: Date.now() - 31 * 60 * 1000 };
+    const current = { server: { close: jest.fn() }, transport: {}, lastActivity: Date.now() };
+    (server as any).sessions.set('stale', stale);
+    (server as any).sessions.set('current', current);
+    (server as any).activeSessions.add(stale);
+    (server as any).activeSessions.add(current);
+    (server as any).pruneIdleSessions();
+
+    expect((server as any).sessions.has('stale')).toBe(false);
+    expect((server as any).sessions.has('current')).toBe(true);
+    expect(stale.server.close).toHaveBeenCalled();
+    expect(current.server.close).not.toHaveBeenCalled();
+  });
+
+  it('exposes OAuth discovery on an ephemeral port', async () => {
+    const { server, port } = await setupServer();
+    activeServer = server;
+    const metadata = await request(port, '/.well-known/oauth-authorization-server');
+    expect(metadata.status).toBe(200);
+    expect(JSON.parse(metadata.body)).toMatchObject({ issuer: `http://127.0.0.1:${port}/` });
+  });
+
+  it('returns 503 while OAuth state is loading and closes the listener if loading fails', async () => {
+    const store = new CommentStore(storageUri);
+    await store.initialize();
+    let release!: (value: string | undefined) => void;
+    let loadingStarted!: () => void;
+    const startedLoading = new Promise<void>((resolve) => { loadingStarted = resolve; });
+    const secrets = memorySecrets();
+    (secrets.get as jest.Mock).mockImplementationOnce(() => {
+      loadingStarted();
+      return new Promise<string | undefined>((resolve) => { release = resolve; });
+    });
+    const port = await availablePort();
+    const server = new AgentCommentsMcpServer(store, { secrets, storageKey: 'oauth' });
+    const starting = server.start(port);
+    await startedLoading;
+    expect((await rawRequest(port, '/mcp')).status).toBe(503);
+    release(undefined);
+    await starting;
+    server.dispose();
+
+    const invalidSecrets = memorySecrets();
+    await invalidSecrets.store('oauth', 'not json');
+    const invalidServer = new AgentCommentsMcpServer(store, { secrets: invalidSecrets, storageKey: 'oauth' });
+    await expect(invalidServer.start(await availablePort())).rejects.toThrow(SyntaxError);
+  });
+
+  it('supports OAuth Bearer tokens and the existing custom token together', async () => {
+    const fixedPort = await availablePort();
+    vscode.workspace.workspaceFolders = [{ uri: repoUri, name: 'repo', index: 0 }];
+    const store = new CommentStore(storageUri);
+    await store.initialize();
+    const server = new AgentCommentsMcpServer(store, { secrets: memorySecrets(), storageKey: 'oauth' });
+    const port = await server.start(fixedPort);
+    activeServer = server;
+    const resource = `http://127.0.0.1:${port}/mcp`;
+
+    const metadata = await request(port, '/.well-known/oauth-authorization-server');
+    expect(metadata.status).toBe(200);
+    expect(JSON.parse(metadata.body)).toMatchObject({
+      issuer: `http://127.0.0.1:${port}/`,
+      authorization_endpoint: `http://127.0.0.1:${port}/authorize`,
+      token_endpoint: `http://127.0.0.1:${port}/token`,
+      registration_endpoint: `http://127.0.0.1:${port}/register`,
+    });
+
+    const registration = await request(port, '/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        redirect_uris: ['http://127.0.0.1:4567/callback'],
+        token_endpoint_auth_method: 'none',
+        client_name: 'Test client',
+      }),
+    });
+    expect(registration.status).toBe(201);
+    const client = JSON.parse(registration.body);
+
+    const verifier = randomBytes(32).toString('base64url');
+    const challenge = createHash('sha256').update(verifier).digest('base64url');
+    const authorize = new URL(`http://127.0.0.1:${port}/authorize`);
+    authorize.search = new URLSearchParams({
+      response_type: 'code',
+      client_id: client.client_id,
+      redirect_uri: 'http://127.0.0.1:4567/callback',
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+      scope: 'mcp:tools',
+      state: 'test-state',
+      resource,
+    }).toString();
+    const deniedAuthorization = await request(port, `${authorize.pathname}${authorize.search}`);
+    expect(deniedAuthorization.status).toBe(302);
+    const deniedCallback = new URL(deniedAuthorization.headers.location!);
+    expect(deniedCallback.searchParams.get('error')).toBe('access_denied');
+    expect(deniedCallback.searchParams.get('state')).toBe('test-state');
+
+    (vscode.window.showWarningMessage as jest.Mock).mockResolvedValueOnce('Allow');
+    const authorization = await request(port, `${authorize.pathname}${authorize.search}`);
+    expect(authorization.status).toBe(302);
+    const callback = new URL(authorization.headers.location!);
+    expect(callback.searchParams.get('state')).toBe('test-state');
+
+    const tokenBody = new URLSearchParams({
+      grant_type: 'authorization_code',
+      client_id: client.client_id,
+      code: callback.searchParams.get('code')!,
+      code_verifier: verifier,
+      redirect_uri: 'http://127.0.0.1:4567/callback',
+      resource,
+    }).toString();
+    const tokenResponse = await request(port, '/token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: tokenBody,
+    });
+    expect(tokenResponse.status).toBe(200);
+    const tokens = JSON.parse(tokenResponse.body);
+
+    const oauthClient = new Client({ name: 'oauth-client', version: '1.0.0' });
+    await oauthClient.connect(new StreamableHTTPClientTransport(new URL(resource), {
+      requestInit: { headers: { authorization: `Bearer ${tokens.access_token}` } },
+    }));
+    activeClients.push(oauthClient);
+    expect(await oauthClient.listTools()).toMatchObject({ tools: expect.any(Array) });
+
+    const legacyRequest = await rawRequest(port, '/mcp', { [AUTH_HEADER]: server.token });
+    expect(legacyRequest.status).not.toBe(401);
+    const legacyClient = await connectClient(server, port);
+    expect(await legacyClient.listTools()).toMatchObject({ tools: expect.any(Array) });
   });
 
   it('tolerates dispose() being called before start-related resources exist elsewhere', async () => {
     const store = new CommentStore(storageUri);
     await store.initialize();
-    const server = new AgentCommentsMcpServer(store);
+    const server = new AgentCommentsMcpServer(store, { secrets: memorySecrets(), storageKey: 'oauth' });
     expect(() => server.dispose()).not.toThrow();
   });
 });
@@ -304,8 +503,9 @@ describe('get_comments', () => {
 
   it('defaults includeResolved to false when a raw tool call omits it entirely (bypassing the MCP schema default)', async () => {
     const registerToolSpy = jest.spyOn(McpServer.prototype, 'registerTool');
-    const { store, server } = await setupServer();
+    const { store, server, port } = await setupServer();
     activeServer = server;
+    await connectClient(server, port);
     await writeSourceFile('a.ts', 'one');
     const created = await store.addComment('a.ts', { lineHint: 1, endLineHint: 1, contentHash: 'h', contextBefore: '', contextAfter: '', status: 'exact' }, 'hi', { type: 'user' });
     await store.resolveComment('a.ts', created.id, { type: 'user' });

@@ -353,6 +353,7 @@ export const window = {
   showInformationMessage: jest.fn(async (..._args: unknown[]) => undefined as string | undefined),
   /** Defaults to undefined — i.e. the user dismissed the box with Esc. */
   showInputBox: jest.fn(async (_options?: unknown) => undefined as string | undefined),
+  createOutputChannel: jest.fn((_name: string) => ({ appendLine: jest.fn(), dispose: jest.fn() })),
 
   onDidChangeVisibleTextEditors: _emitters.didChangeVisibleTextEditors.event,
 

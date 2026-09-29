@@ -1,3 +1,4 @@
+import * as http from 'http';
 import * as vscode from 'vscode';
 import { activate, deactivate } from '../src/extension';
 import { AgentCommentsTreeProvider, CommentNode } from '../src/ui/treeView';
@@ -5,14 +6,21 @@ import { AgentCommentsMcpServer } from '../src/mcp/server';
 import { CommentStore } from '../src/storage/store';
 import { AgentCommentsController } from '../src/comments/controller';
 
-const mockVscode = vscode as unknown as { __reset(): void };
+const mockVscode = vscode as unknown as { __reset(): void; __setConfig(key: string, value: unknown): void };
 const repoUri = vscode.Uri.file('/repo');
 
 function makeContext(storageUri: vscode.Uri | undefined) {
+  const secrets = new Map<string, string>();
   return {
     storageUri,
     extensionUri: vscode.Uri.file('/ext'),
     subscriptions: [] as vscode.Disposable[],
+    secrets: {
+      get: jest.fn(async (key: string) => secrets.get(key)),
+      store: jest.fn(async (key: string, value: string) => { secrets.set(key, value); }),
+      delete: jest.fn(async (key: string) => { secrets.delete(key); }),
+      onDidChange: () => ({ dispose: jest.fn() }),
+    },
   } as unknown as vscode.ExtensionContext;
 }
 
@@ -32,6 +40,20 @@ async function activateNormally() {
   return context;
 }
 
+async function availablePort(): Promise<number> {
+  const server = http.createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    throw new Error('test server did not bind to a TCP port');
+  }
+  await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+  return address.port;
+}
+
 afterEach(async () => {
   jest.restoreAllMocks();
   mockVscode.__reset();
@@ -48,6 +70,7 @@ describe('activate — no workspace storage', () => {
 
 describe('activate — normal wiring', () => {
   it('registers the tree view, decoration provider, and MCP server definition provider', async () => {
+    const startSpy = jest.spyOn(AgentCommentsMcpServer.prototype, 'start');
     const context = await activateNormally();
     expect(vscode.window.registerTreeDataProvider).toHaveBeenCalledWith('agentCommentsView', expect.any(Object));
     expect(vscode.window.registerFileDecorationProvider).toHaveBeenCalled();
@@ -59,7 +82,40 @@ describe('activate — normal wiring', () => {
     expect(defs).toHaveLength(1);
     expect(defs[0].uri.toString()).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
     expect(defs[0].headers['x-agent-comments-token']).toEqual(expect.any(String));
+    expect(startSpy).toHaveBeenCalledWith(0);
 
+    expect(vscode.window.createOutputChannel).toHaveBeenCalledWith('Agentic Comments');
+    const output = (vscode.window.createOutputChannel as jest.Mock).mock.results[0].value;
+    expect(output.appendLine).toHaveBeenCalledWith(expect.stringMatching(/^MCP server listening at http:\/\/127\.0\.0\.1:\d+\/mcp$/));
+
+    await Promise.all(context.subscriptions.map((d) => d.dispose()));
+  });
+
+  it('binds the configured fixed MCP port instead of choosing a random one', async () => {
+    const port = await availablePort();
+    mockVscode.__setConfig('agenticComments.mcp.port', port);
+    const startSpy = jest.spyOn(AgentCommentsMcpServer.prototype, 'start');
+
+    const context = await activateNormally();
+
+    expect(startSpy).toHaveBeenCalledWith(port);
+    const registerMcp = vscode.lm.registerMcpServerDefinitionProvider as jest.Mock;
+    const provider = registerMcp.mock.calls[0][1];
+    expect(provider.provideMcpServerDefinitions()[0].uri.toString()).toBe(`http://127.0.0.1:${port}/mcp`);
+    await Promise.all(context.subscriptions.map((d) => d.dispose()));
+  });
+
+  it('always initializes OAuth with workspace-scoped secret storage', async () => {
+    const port = await availablePort();
+    mockVscode.__setConfig('agenticComments.mcp.port', port);
+    const startSpy = jest.spyOn(AgentCommentsMcpServer.prototype, 'start');
+
+    const context = await activateNormally();
+
+    expect(startSpy).toHaveBeenCalledWith(port);
+    expect(context.secrets.get).toHaveBeenCalledWith(
+      expect.stringMatching(/^agenticComments\.mcp\.oauth\.[a-f0-9]{64}$/)
+    );
     await Promise.all(context.subscriptions.map((d) => d.dispose()));
   });
 
