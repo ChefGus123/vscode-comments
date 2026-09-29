@@ -60,6 +60,10 @@ describe('activate — normal wiring', () => {
     expect(defs[0].uri.toString()).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
     expect(defs[0].headers['x-agent-comments-token']).toEqual(expect.any(String));
 
+    expect(vscode.window.createOutputChannel).toHaveBeenCalledWith('Agentic Comments');
+    const output = (vscode.window.createOutputChannel as jest.Mock).mock.results[0].value;
+    expect(output.appendLine).toHaveBeenCalledWith(expect.stringMatching(/^MCP server listening at http:\/\/127\.0\.0\.1:\d+\/mcp$/));
+
     await Promise.all(context.subscriptions.map((d) => d.dispose()));
   });
 

@@ -39,10 +39,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const decorationProvider = new AgentCommentsDecorationProvider(store);
   context.subscriptions.push(vscode.window.registerFileDecorationProvider(decorationProvider));
 
+  const output = vscode.window.createOutputChannel('Agentic Comments');
+  context.subscriptions.push(output);
+
   const mcpServer = new AgentCommentsMcpServer(store);
   context.subscriptions.push(mcpServer);
   try {
     const port = await mcpServer.start();
+    const endpoint = `http://127.0.0.1:${port}/mcp`;
+    output.appendLine(`MCP server listening at ${endpoint}`);
     const onDidChangeMcpServerDefinitionsEmitter = new vscode.EventEmitter<void>();
     context.subscriptions.push(
       vscode.lm.registerMcpServerDefinitionProvider('agentComments.mcpProvider', {
@@ -50,7 +55,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         provideMcpServerDefinitions: () => [
           new vscode.McpHttpServerDefinition(
             'Agentic Comments',
-            vscode.Uri.parse(`http://127.0.0.1:${port}/mcp`),
+            vscode.Uri.parse(endpoint),
             { [AUTH_HEADER]: mcpServer.token }
           ),
         ],
