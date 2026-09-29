@@ -24,6 +24,7 @@ Leave GitHub-style inline review comments on your live code, and let AI coding a
 - **Dedicated sidebar** — comments grouped by file, unresolved by default with a toggle to show resolved, inline Resolve/Reopen/Delete actions, click-to-jump navigation.
 - **Explorer badges** — files with unresolved comments get a count badge, the same way VS Code marks modified files for git.
 - **Never touches git** — nothing is written inside your repo folder. Comments live in VS Code's own per-workspace extension storage.
+- **Harness agnostic** - Whether your coding agents runs natively within VSCode or in our terminal: the exposed MCP server runs on localhost, supports fixed port mappings and OAuth. Just point your agent at it and you're ready to go!
 
 ## Commands
 
@@ -43,6 +44,10 @@ Leave GitHub-style inline review comments on your live code, and let AI coding a
 
 Any MCP-compatible agent gets these tools automatically once the extension is active — enable/disable them per your agent's own tool picker, same as any other MCP tool.
 
+The local MCP endpoint is logged to the **Agentic Comments** channel in VS Code's Output panel when the server starts. The per-session authentication token is not logged.
+
+VS Code connects with a random per-session token in the `x-agent-comments-token` header. Other localhost MCP clients can use the built-in OAuth 2.1 flow, including discovery metadata, dynamic client registration, authorization code + PKCE, refresh tokens, and revocation. Every authorization request opens a VS Code confirmation dialog showing the client and requested scope; denying it returns `access_denied` to the client. Client registrations and tokens are stored per workspace in VS Code Secret Storage. With the default random port, tokens from a previous endpoint are discarded at startup; set `agenticComments.mcp.port` when an integration needs a stable endpoint and credentials across restarts.
+
 | Tool | What it does |
 |---|---|
 | `list_unresolved_comments` | List unresolved comments, optionally scoped to one file, grouped by file |
@@ -59,6 +64,7 @@ Every response flags comments whose anchor isn't exact (`locationUncertain: true
 | `agenticComments.editor.hideResolvedComments` | `true` | Hide resolved comments from the editor gutter to reduce clutter. They stay accessible from the sidebar with Show Resolved on. |
 | `agenticComments.mcp.alwaysIncludeSnippet` | `true` (experimental) | Include `originalContent` on every MCP comment response, not just ones with an uncertain anchor location. Turn off to only include it when `locationUncertain` is true. |
 | `agenticComments.mcp.snippetMaxChars` | `500` | Maximum characters of `originalContent` before truncation. `0` omits the snippet entirely. |
+| `agenticComments.mcp.port` | `0` | Local MCP HTTP port. `0` chooses a random available port; set a port number for a stable endpoint. Restart the extension host after changing it. |
 
 ## Release Notes
 
