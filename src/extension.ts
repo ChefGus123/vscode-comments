@@ -45,7 +45,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const mcpServer = new AgentCommentsMcpServer(store);
   context.subscriptions.push(mcpServer);
   try {
-    const port = await mcpServer.start();
+    const configuredPort = vscode.workspace.getConfiguration('agenticComments').get<number>('mcp.port', 0);
+    const port = await mcpServer.start(configuredPort);
     const endpoint = `http://127.0.0.1:${port}/mcp`;
     output.appendLine(`MCP server listening at ${endpoint}`);
     const onDidChangeMcpServerDefinitionsEmitter = new vscode.EventEmitter<void>();

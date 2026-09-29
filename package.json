@@ -315,6 +315,13 @@
           "default": 500,
           "minimum": 0,
           "description": "Maximum characters of the original-code snippet included in MCP comment responses before truncation. Set to 0 to omit the snippet entirely."
+        },
+        "agenticComments.mcp.port": {
+          "type": "integer",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "Local port for the MCP HTTP server. 0 chooses a random available port. Reload VS Code after changing this setting."
         }
       }
     }

@@ -111,7 +111,7 @@ export class AgentCommentsMcpServer implements vscode.Disposable {
     return this.authToken;
   }
 
-  async start(): Promise<number> {
+  async start(port = 0): Promise<number> {
     const server = new McpServer({ name: 'agentic-comments', version: '0.1.0' });
     this.registerTools(server);
 
@@ -136,7 +136,7 @@ export class AgentCommentsMcpServer implements vscode.Disposable {
 
     await new Promise<void>((resolve, reject) => {
       httpServer.once('error', reject);
-      httpServer.listen(0, '127.0.0.1', () => resolve());
+      httpServer.listen(port, '127.0.0.1', () => resolve());
     });
 
     this.mcpServer = server;
