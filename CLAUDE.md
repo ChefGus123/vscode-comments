@@ -3,7 +3,7 @@
 VS Code extension: inline review comments on live code, exposed to AI agents via MCP — a shared scratchpad between developer and agents, not git or a PR tool.
 
 ## Stack
-TypeScript → esbuild bundle. VS Code Comments API + TreeView + FileDecoration. In-process MCP server (`@modelcontextprotocol/sdk` over local HTTP, token-authed).
+TypeScript → esbuild bundle. VS Code Comments API + TreeView + FileDecoration. In-process MCP server (`@modelcontextprotocol/sdk` over loopback HTTP, random session-token auth plus built-in OAuth 2.1 with user approval).
 
 ## How to work on this project
 - Anything sent repeatedly — tool descriptions, schemas, responses — is a real cost, not a one-off nicety. Trim it hard, right up to where a model could still misread it, no further.

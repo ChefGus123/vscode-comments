@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import * as vscode from 'vscode';
 import { CommentStore } from './storage/store';
 import { AgentCommentsController } from './comments/controller';
@@ -42,10 +43,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const output = vscode.window.createOutputChannel('Agentic Comments');
   context.subscriptions.push(output);
 
-  const mcpServer = new AgentCommentsMcpServer(store);
+  const mcpServer = new AgentCommentsMcpServer(store, {
+    secrets: context.secrets,
+    storageKey: `agenticComments.mcp.oauth.${createHash('sha256').update(context.storageUri.toString()).digest('hex')}`,
+  });
   context.subscriptions.push(mcpServer);
   try {
-    const configuredPort = vscode.workspace.getConfiguration('agenticComments').get<number>('mcp.port', 0);
+    const config = vscode.workspace.getConfiguration('agenticComments');
+    const configuredPort = config.get<number>('mcp.port', 0);
     const port = await mcpServer.start(configuredPort);
     const endpoint = `http://127.0.0.1:${port}/mcp`;
     output.appendLine(`MCP server listening at ${endpoint}`);

@@ -10,10 +10,17 @@ const mockVscode = vscode as unknown as { __reset(): void; __setConfig(key: stri
 const repoUri = vscode.Uri.file('/repo');
 
 function makeContext(storageUri: vscode.Uri | undefined) {
+  const secrets = new Map<string, string>();
   return {
     storageUri,
     extensionUri: vscode.Uri.file('/ext'),
     subscriptions: [] as vscode.Disposable[],
+    secrets: {
+      get: jest.fn(async (key: string) => secrets.get(key)),
+      store: jest.fn(async (key: string, value: string) => { secrets.set(key, value); }),
+      delete: jest.fn(async (key: string) => { secrets.delete(key); }),
+      onDidChange: () => ({ dispose: jest.fn() }),
+    },
   } as unknown as vscode.ExtensionContext;
 }
 
@@ -95,6 +102,20 @@ describe('activate — normal wiring', () => {
     const registerMcp = vscode.lm.registerMcpServerDefinitionProvider as jest.Mock;
     const provider = registerMcp.mock.calls[0][1];
     expect(provider.provideMcpServerDefinitions()[0].uri.toString()).toBe(`http://127.0.0.1:${port}/mcp`);
+    await Promise.all(context.subscriptions.map((d) => d.dispose()));
+  });
+
+  it('always initializes OAuth with workspace-scoped secret storage', async () => {
+    const port = await availablePort();
+    mockVscode.__setConfig('agenticComments.mcp.port', port);
+    const startSpy = jest.spyOn(AgentCommentsMcpServer.prototype, 'start');
+
+    const context = await activateNormally();
+
+    expect(startSpy).toHaveBeenCalledWith(port);
+    expect(context.secrets.get).toHaveBeenCalledWith(
+      expect.stringMatching(/^agenticComments\.mcp\.oauth\.[a-f0-9]{64}$/)
+    );
     await Promise.all(context.subscriptions.map((d) => d.dispose()));
   });
 
