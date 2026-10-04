@@ -40,22 +40,41 @@ Leave GitHub-style inline review comments on your live code, and let AI coding a
 | **Refresh** | Sidebar toolbar |
 | **Clear All Comment Data for This Workspace** | Command Palette — deletes all stored comments for the workspace; irreversible |
 
-## MCP Tools
+## Connecting agents
 
-Any MCP-compatible agent gets these tools automatically once the extension is active — enable/disable them per your agent's own tool picker, same as any other MCP tool.
+Agentic Comments talks to AI agents over [MCP](https://modelcontextprotocol.io). The server runs inside VS Code, only on your machine, and is available while the extension is active.
 
-The local MCP endpoint is logged to the **Agentic Comments** channel in VS Code's Output panel when the server starts. The per-session authentication token is not logged.
+### GitHub Copilot
 
-VS Code connects with a random per-session token in the `x-agent-comments-token` header. Other localhost MCP clients can use the built-in OAuth 2.1 flow, including discovery metadata, dynamic client registration, authorization code + PKCE, refresh tokens, and revocation. Every authorization request opens a VS Code confirmation dialog showing the client and requested scope; denying it returns `access_denied` to the client. Client registrations and tokens are stored per workspace in VS Code Secret Storage. With the default random port, tokens from a previous endpoint are discarded at startup; set `agenticComments.mcp.port` when an integration needs a stable endpoint and credentials across restarts.
+Nothing to set up. The extension registers itself with VS Code, and Copilot picks up the tools automatically. You can turn individual tools on or off from Copilot's tool picker.
+
+### Other agents (Claude Code, Cursor, Codex, …)
+
+Any agent that supports HTTP MCP servers can connect:
+
+1. **Pick a fixed port.** In the workspace's `.vscode/settings.json`, set a port, then reload the window:
+```json
+   { "agenticComments.mcp.port": 47100 }
+```
+   Use a different port for each workspace you open at the same time.
+2. **Add the server to your agent** at `http://127.0.0.1:47100/mcp`. For example, in Claude Code:
+```bash
+   claude mcp add --transport http agentic-comments http://127.0.0.1:47100/mcp
+```
+3. **Approve it once.** When the agent first connects, it opens a sign-in page and VS Code asks whether to allow it. Click **Allow**. Your agent stays connected across VS Code restarts.
+
+VS Code needs to be open on the same folder your agent is working in. The server's address is also shown in the **Agentic Comments** output channel.
+
+### Tools
 
 | Tool | What it does |
 |---|---|
-| `list_unresolved_comments` | List unresolved comments, optionally scoped to one file, grouped by file |
-| `get_comments` | Fetch comments for one or more files, optionally including resolved ones |
-| `add_comments` | Create one or more comments in a single call, grouped by file |
-| `resolve_comments` | Resolve one or more comments by id, grouped by file |
+| `list_unresolved_comments` | List unresolved comments across the workspace, or in one file |
+| `get_comments` | Get comments for one or more files, optionally including resolved ones |
+| `add_comments` | Leave one or more comments in a single call |
+| `resolve_comments` | Resolve one or more comments by id |
 
-Every response flags comments whose anchor isn't exact (`locationUncertain: true`) rather than hiding them, so an agent always knows when to double-check a line number before trusting it. Comments also carry an `originalContent` snippet of the code they were originally about — by default on every comment (so an agent can judge relevance without a separate file read), configurable via **Settings** below.
+If the code around a comment has changed, the comment is marked `locationUncertain`, so the agent knows to check the line before relying on it. Each comment also includes a snippet of the code it was left on, which you can adjust under **Settings**.
 
 ## Settings
 
